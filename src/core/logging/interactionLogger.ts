@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-export type InteractionChannel = "telegram" | "cli" | "cron";
+export type InteractionChannel = "telegram" | "cli" | "web" | "cron";
 
 export type InteractionRecord = {
   id: number;

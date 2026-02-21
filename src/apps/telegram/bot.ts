@@ -138,7 +138,7 @@ function attachHandlers(bot: Telegraf, resolvedCodexCommand: string): void {
       return;
     }
 
-    const session = store.getOrCreateSessionByChat(chatId);
+    const session = store.getOrCreateSessionByChat(chatId, "telegram");
     if (sessionLocks.has(session.id)) {
       await ctx.reply(`Session ${session.shortId} is busy. Try again after current run.`);
       return;
@@ -287,7 +287,7 @@ function attachHandlers(bot: Telegraf, resolvedCodexCommand: string): void {
       return;
     }
 
-    const session = store.createAndActivateSession(chatId);
+    const session = store.createAndActivateSession(chatId, "telegram");
     await ctx.reply(`Switched to new session: ${session.shortId}`);
   });
 
@@ -306,7 +306,7 @@ function attachHandlers(bot: Telegraf, resolvedCodexCommand: string): void {
     }
 
     try {
-      const session = store.setActiveSession(chatId, id);
+      const session = store.setActiveSession(chatId, id, "telegram");
       await ctx.reply(`Switched to session: ${session.shortId}`);
     } catch (err) {
       await ctx.reply(String(err));
@@ -320,7 +320,7 @@ function attachHandlers(bot: Telegraf, resolvedCodexCommand: string): void {
       return;
     }
 
-    const session = store.getOrCreateSessionByChat(chatId);
+    const session = store.getOrCreateSessionByChat(chatId, "telegram");
     await ctx.reply(`Active session: ${session.shortId}`);
   });
 
@@ -448,7 +448,7 @@ function attachHandlers(bot: Telegraf, resolvedCodexCommand: string): void {
 
     const parts = (ctx.message as { text?: string }).text?.split(" ").filter(Boolean) ?? [];
     const limit = Number(parts[1] ?? "5");
-    const session = store.getOrCreateSessionByChat(chatId);
+    const session = store.getOrCreateSessionByChat(chatId, "telegram");
     const rows = store.listHistory(session.id, Number.isNaN(limit) ? 5 : limit);
 
     if (!rows.length) {

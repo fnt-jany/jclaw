@@ -154,9 +154,9 @@ export async function startCliChat(): Promise<void> {
       throw new Error(`Session not found in chat '${parsed.chatId}': ${parsed.sessionId}`);
     }
     session = found;
-    store.setActiveSession(parsed.chatId, resolvedId);
+    store.setActiveSession(parsed.chatId, resolvedId, "cli");
   } else {
-    session = store.getOrCreateSessionByChat(parsed.chatId);
+    session = store.getOrCreateSessionByChat(parsed.chatId, "cli");
   }
 
   output.write(`jclaw chat mode started (chat=${parsed.chatId}, slot=${session.shortId})\n`);
@@ -185,7 +185,7 @@ export async function startCliChat(): Promise<void> {
         continue;
       }
       if (line === "/new") {
-        session = store.createAndActivateSession(parsed.chatId);
+        session = store.createAndActivateSession(parsed.chatId, "cli");
         output.write(`Switched to slot ${session.shortId} (${session.id})\n`);
         continue;
       }
@@ -196,7 +196,7 @@ export async function startCliChat(): Promise<void> {
           continue;
         }
         try {
-          session = store.setActiveSession(parsed.chatId, target);
+          session = store.setActiveSession(parsed.chatId, target, "cli");
           output.write(`Switched to slot ${session.shortId} (${session.id})\n`);
         } catch (err) {
           output.write(`${String(err)}\n`);

@@ -4,6 +4,54 @@ import Database from "better-sqlite3";
 
 const connections = new Map<string, Database.Database>();
 
+type TableInfoRow = {
+  name: string;
+};
+
+function ensureActiveSessionsTable(db: Database.Database): void {
+  const tableRow = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'active_sessions'")
+    .get() as TableInfoRow | undefined;
+
+  if (!tableRow) {
+    db.exec(`
+      CREATE TABLE active_sessions (
+        chat_id TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        PRIMARY KEY(chat_id, channel)
+      );
+    `);
+    return;
+  }
+
+  const columns = db
+    .prepare("PRAGMA table_info(active_sessions)")
+    .all() as Array<{ name: string }>;
+  const hasChannel = columns.some((col) => col.name === "channel");
+  if (hasChannel) {
+    return;
+  }
+
+  db.exec(`
+    ALTER TABLE active_sessions RENAME TO active_sessions_legacy;
+
+    CREATE TABLE active_sessions (
+      chat_id TEXT NOT NULL,
+      channel TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      PRIMARY KEY(chat_id, channel)
+    );
+
+    INSERT INTO active_sessions(chat_id, channel, session_id)
+    SELECT chat_id, 'shared', session_id
+    FROM active_sessions_legacy;
+
+    DROP TABLE active_sessions_legacy;
+  `);
+}
+
+
 function ensureSchema(db: Database.Database): void {
   db.pragma("journal_mode = WAL");
   db.pragma("busy_timeout = 5000");
@@ -39,8 +87,10 @@ function ensureSchema(db: Database.Database): void {
       ON run_history(session_id, timestamp);
 
     CREATE TABLE IF NOT EXISTS active_sessions (
-      chat_id TEXT PRIMARY KEY,
-      session_id TEXT NOT NULL
+      chat_id TEXT NOT NULL,
+      channel TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      PRIMARY KEY(chat_id, channel)
     );
 
     CREATE TABLE IF NOT EXISTS chat_meta (
@@ -86,6 +136,8 @@ function ensureSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_cron_due
       ON cron_jobs(enabled, next_run_at);
   `);
+
+  ensureActiveSessionsTable(db);
 }
 
 export function openDb(dbFile: string): Database.Database {

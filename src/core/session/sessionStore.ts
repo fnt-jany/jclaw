@@ -23,6 +23,9 @@ export type Session = {
   history: RunRecord[];
 };
 
+export type ActiveSessionChannel = "telegram" | "web" | "cli" | "shared";
+
+const DEFAULT_ACTIVE_CHANNEL: ActiveSessionChannel = "shared";
 
 export class SessionStore {
   private readonly dbFile: string;
@@ -37,10 +40,10 @@ export class SessionStore {
     this.normalizeStore();
   }
 
-  getOrCreateSessionByChat(chatId: string): Session {
+  getOrCreateSessionByChat(chatId: string, channel: ActiveSessionChannel = DEFAULT_ACTIVE_CHANNEL): Session {
     const active = this.db
-      .prepare("SELECT session_id FROM active_sessions WHERE chat_id = ?")
-      .get(chatId) as { session_id: string } | undefined;
+      .prepare("SELECT session_id FROM active_sessions WHERE chat_id = ? AND channel = ?")
+      .get(chatId, channel) as { session_id: string } | undefined;
 
     if (active) {
       const session = this.getSession(active.session_id);
@@ -49,7 +52,20 @@ export class SessionStore {
       }
     }
 
-    return this.createAndActivateSession(chatId);
+    if (channel !== DEFAULT_ACTIVE_CHANNEL) {
+      const shared = this.db
+        .prepare("SELECT session_id FROM active_sessions WHERE chat_id = ? AND channel = ?")
+        .get(chatId, DEFAULT_ACTIVE_CHANNEL) as { session_id: string } | undefined;
+      if (shared) {
+        const sharedSession = this.getSession(shared.session_id);
+        if (sharedSession) {
+          this.upsertActiveSession(chatId, channel, sharedSession.id);
+          return sharedSession;
+        }
+      }
+    }
+
+    return this.createAndActivateSession(chatId, channel);
   }
 
   createSession(chatId: string | null, shortId?: SlotId): Session {
@@ -66,7 +82,7 @@ export class SessionStore {
     };
   }
 
-  createAndActivateSession(chatId: string): Session {
+  createAndActivateSession(chatId: string, channel: ActiveSessionChannel = DEFAULT_ACTIVE_CHANNEL): Session {
     const slot = this.allocateNextSlot(chatId);
     this.removeSessionByChatAndSlot(chatId, slot);
 
@@ -78,14 +94,12 @@ export class SessionStore {
       )
       .run(session.id, session.shortId, session.chatId, session.codexSessionId, session.createdAt, session.updatedAt);
 
-    this.db
-      .prepare("INSERT INTO active_sessions(chat_id, session_id) VALUES (?, ?) ON CONFLICT(chat_id) DO UPDATE SET session_id = excluded.session_id")
-      .run(chatId, session.id);
+    this.upsertActiveSession(chatId, channel, session.id);
 
     return session;
   }
 
-  setActiveSession(chatId: string, sessionIdOrPrefix: string): Session {
+  setActiveSession(chatId: string, sessionIdOrPrefix: string, channel: ActiveSessionChannel = DEFAULT_ACTIVE_CHANNEL): Session {
     const resolvedId = this.resolveSessionId(sessionIdOrPrefix, chatId);
     if (!resolvedId) {
       throw new Error(`Session not found: ${sessionIdOrPrefix}`);
@@ -106,9 +120,7 @@ export class SessionStore {
       .prepare("UPDATE sessions SET chat_id = ?, updated_at = ? WHERE id = ?")
       .run(chatId, now, resolvedId);
 
-    this.db
-      .prepare("INSERT INTO active_sessions(chat_id, session_id) VALUES (?, ?) ON CONFLICT(chat_id) DO UPDATE SET session_id = excluded.session_id")
-      .run(chatId, resolvedId);
+    this.upsertActiveSession(chatId, channel, resolvedId);
 
     const updated = this.getSession(resolvedId);
     if (!updated) {
@@ -362,6 +374,16 @@ export class SessionStore {
     }
   }
 
+
+  private upsertActiveSession(chatId: string, channel: ActiveSessionChannel, sessionId: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO active_sessions(chat_id, channel, session_id) VALUES (?, ?, ?)
+         ON CONFLICT(chat_id, channel) DO UPDATE SET session_id = excluded.session_id`
+      )
+      .run(chatId, channel, sessionId);
+  }
+
   private generateSessionId(chatId: string | null, slot: SlotId): string {
     const suffix = randomBytes(3).toString("hex").slice(0, 5);
     const chatTag = (chatId ?? "local").replace(/[^a-zA-Z0-9]/g, "").slice(-4).toLowerCase() || "locl";
@@ -423,24 +445,34 @@ export class SessionStore {
           .run(chatId, firstFree >= 0 ? firstFree : 0);
       }
 
-      const active = this.db
-        .prepare("SELECT session_id FROM active_sessions WHERE chat_id = ?")
-        .get(chatId) as { session_id: string } | undefined;
-      const activeExists = active
-        ? (this.db.prepare("SELECT 1 as ok FROM sessions WHERE id = ?").get(active.session_id) as { ok: number } | undefined)
+      const activeRows = this.db
+        .prepare("SELECT channel, session_id FROM active_sessions WHERE chat_id = ?")
+        .all(chatId) as Array<{ channel: string; session_id: string }>;
+
+      for (const row of activeRows) {
+        const activeExists = this.db
+          .prepare("SELECT 1 as ok FROM sessions WHERE id = ?")
+          .get(row.session_id) as { ok: number } | undefined;
+        if (!activeExists) {
+          this.db
+            .prepare("DELETE FROM active_sessions WHERE chat_id = ? AND channel = ?")
+            .run(chatId, row.channel);
+        }
+      }
+
+      const shared = this.db
+        .prepare("SELECT session_id FROM active_sessions WHERE chat_id = ? AND channel = ?")
+        .get(chatId, DEFAULT_ACTIVE_CHANNEL) as { session_id: string } | undefined;
+      const sharedExists = shared
+        ? (this.db.prepare("SELECT 1 as ok FROM sessions WHERE id = ?").get(shared.session_id) as { ok: number } | undefined)
         : undefined;
 
-      if (!active || !activeExists) {
+      if (!shared || !sharedExists) {
         const latest = this.db
           .prepare("SELECT id FROM sessions WHERE chat_id = ? ORDER BY updated_at DESC LIMIT 1")
           .get(chatId) as { id: string } | undefined;
         if (latest) {
-          this.db
-            .prepare(
-              `INSERT INTO active_sessions(chat_id, session_id) VALUES (?, ?)
-               ON CONFLICT(chat_id) DO UPDATE SET session_id = excluded.session_id`
-            )
-            .run(chatId, latest.id);
+          this.upsertActiveSession(chatId, DEFAULT_ACTIVE_CHANNEL, latest.id);
         }
       }
     }

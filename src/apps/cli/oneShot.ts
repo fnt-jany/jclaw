@@ -78,7 +78,7 @@ export async function startCliOneShot(): Promise<void> {
   }
 
   if (!session) {
-    session = store.getOrCreateSessionByChat(parsed.chatId);
+    session = store.getOrCreateSessionByChat(parsed.chatId, "cli");
   }
 
   const result = await runCodex({

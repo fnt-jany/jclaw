@@ -37,8 +37,10 @@ function buildArgs(input: RunInput): string[] {
   const parsed = parseArgsStringToArgv(argsString);
 
   if (input.codexSessionId && parsed[0] === "exec" && !parsed.includes("resume")) {
-    const flags = parsed.slice(1).filter((arg) => arg.startsWith("-"));
-    return ["exec", "resume", ...flags, input.codexSessionId, input.prompt];
+    const tail = parsed.slice(1);
+    const promptIdx = tail.lastIndexOf(input.prompt);
+    const options = promptIdx >= 0 ? [...tail.slice(0, promptIdx), ...tail.slice(promptIdx + 1)] : tail;
+    return ["exec", "resume", ...options, input.codexSessionId, input.prompt];
   }
 
   return parsed;

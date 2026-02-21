@@ -107,7 +107,7 @@ function buildReplyWithHeaders(
 }
 
 function getState(chatId: string): { session: Session; logEnabled: boolean } {
-  const session = store.getOrCreateSessionByChat(chatId);
+  const session = store.getOrCreateSessionByChat(chatId, "web");
   return { session, logEnabled: interactionLogger.isEnabled() };
 }
 
@@ -263,7 +263,7 @@ async function runPrompt(chatId: string, session: Session, prompt: string): Prom
     });
 
     const interactionId = await interactionLogger.append({
-      channel: "cli",
+      channel: "web",
       sessionId: session.id,
       chatId,
       input: prompt,
@@ -310,7 +310,7 @@ async function handleCommand(chatId: string, session: Session, cmdLine: string):
   }
 
   if (cmd === "/new") {
-    const next = store.createAndActivateSession(chatId);
+    const next = store.createAndActivateSession(chatId, "web");
     return {
       reply: `Switched to session slot ${next.shortId}`,
       sessionSlot: next.shortId,
@@ -329,7 +329,7 @@ async function handleCommand(chatId: string, session: Session, cmdLine: string):
         logEnabled: interactionLogger.isEnabled()
       };
     }
-    const next = store.setActiveSession(chatId, target);
+    const next = store.setActiveSession(chatId, target, "web");
     return {
       reply: `Switched to session slot ${next.shortId}`,
       sessionSlot: next.shortId,
@@ -572,7 +572,15 @@ async function handleApiState(req: IncomingMessage, res: ServerResponse): Promis
 
 async function handleStatic(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const pathname = new URL(req.url ?? "/", `http://${req.headers.host}`).pathname;
-  const filePath = pathname === "/" ? path.join(process.cwd(), "web", "index.html") : path.join(process.cwd(), "web", pathname.slice(1));
+  const webRoot = path.resolve(process.cwd(), "web");
+  const candidate = pathname === "/" ? "index.html" : `.${pathname}`;
+  const filePath = path.resolve(webRoot, candidate);
+
+  if (filePath !== webRoot && !filePath.startsWith(`${webRoot}${path.sep}`)) {
+    res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("Not found");
+    return;
+  }
 
   try {
     const body = await readFile(filePath);

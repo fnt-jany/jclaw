@@ -4,7 +4,7 @@ import path from "node:path";
 const schema = z.object({
   TELEGRAM_BOT_TOKEN: z.string().default(""),
   ALLOWED_CHAT_IDS: z.string().default(""),
-  DATA_FILE: z.string().default("./data/sessions.json"),
+  DATA_FILE: z.string().default("./data/interactions.json"),
   DB_FILE: z.string().default(""),
   CODEX_COMMAND: z.string().default("auto"),
   CODEX_ARGS_TEMPLATE: z.string().default("{prompt}"),
