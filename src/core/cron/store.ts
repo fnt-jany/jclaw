@@ -10,6 +10,7 @@ export type CronJob = {
   cron: string;
   prompt: string;
   timezone: string | null;
+  runOnce: boolean;
   nextRunAt: string;
   lastRunAt: string | null;
   lastStatus: "ok" | "error" | null;
@@ -18,13 +19,13 @@ export type CronJob = {
   updatedAt: string;
 };
 
-
 export type CreateCronJobInput = {
   chatId: string;
   sessionTarget: string;
   cron: string;
   prompt: string;
   timezone?: string | null;
+  runOnce?: boolean;
 };
 
 export class CronStore {
@@ -35,6 +36,7 @@ export class CronStore {
   }
 
   async init(): Promise<void> {
+    return;
   }
 
   async reload(): Promise<void> {
@@ -44,7 +46,7 @@ export class CronStore {
   list(): CronJob[] {
     const rows = this.db
       .prepare(
-        `SELECT id, enabled, chat_id, session_target, cron, prompt, timezone, next_run_at,
+        `SELECT id, enabled, chat_id, session_target, cron, prompt, timezone, run_once, next_run_at,
                 last_run_at, last_status, last_error, created_at, updated_at
          FROM cron_jobs
          ORDER BY created_at ASC`
@@ -57,7 +59,7 @@ export class CronStore {
   get(id: string): CronJob | null {
     const row = this.db
       .prepare(
-        `SELECT id, enabled, chat_id, session_target, cron, prompt, timezone, next_run_at,
+        `SELECT id, enabled, chat_id, session_target, cron, prompt, timezone, run_once, next_run_at,
                 last_run_at, last_status, last_error, created_at, updated_at
          FROM cron_jobs
          WHERE id = ?`
@@ -75,11 +77,22 @@ export class CronStore {
     this.db
       .prepare(
         `INSERT INTO cron_jobs (
-          id, enabled, chat_id, session_target, cron, prompt, timezone,
+          id, enabled, chat_id, session_target, cron, prompt, timezone, run_once,
           next_run_at, last_run_at, last_status, last_error, created_at, updated_at
-        ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)`
+        ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)`
       )
-      .run(id, input.chatId, input.sessionTarget, input.cron, input.prompt, input.timezone ?? null, nextRunAt, now, now);
+      .run(
+        id,
+        input.chatId,
+        input.sessionTarget,
+        input.cron,
+        input.prompt,
+        input.timezone ?? null,
+        input.runOnce ? 1 : 0,
+        nextRunAt,
+        now,
+        now
+      );
 
     const created = this.get(id);
     if (!created) {
@@ -114,7 +127,7 @@ export class CronStore {
   dueJobs(now = new Date()): CronJob[] {
     const rows = this.db
       .prepare(
-        `SELECT id, enabled, chat_id, session_target, cron, prompt, timezone, next_run_at,
+        `SELECT id, enabled, chat_id, session_target, cron, prompt, timezone, run_once, next_run_at,
                 last_run_at, last_status, last_error, created_at, updated_at
          FROM cron_jobs
          WHERE enabled = 1 AND next_run_at <= ?
@@ -153,7 +166,6 @@ export class CronStore {
 
     return this.get(id);
   }
-
 }
 
 function mapCronRow(row: Record<string, unknown>): CronJob {
@@ -165,6 +177,7 @@ function mapCronRow(row: Record<string, unknown>): CronJob {
     cron: String(row.cron),
     prompt: String(row.prompt),
     timezone: row.timezone ? String(row.timezone) : null,
+    runOnce: Number(row.run_once) === 1,
     nextRunAt: String(row.next_run_at),
     lastRunAt: row.last_run_at ? String(row.last_run_at) : null,
     lastStatus: row.last_status ? (String(row.last_status) as "ok" | "error") : null,

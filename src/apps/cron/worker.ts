@@ -5,7 +5,8 @@ import { SessionStore } from "../../core/session/sessionStore";
 import { runCodex } from "../../core/codex/runner";
 import { resolveCodexCommand } from "../../core/commands/resolver";
 import { InteractionLogger } from "../../core/logging/interactionLogger";
-import { CronStore } from "../../core/cron/store";
+import { CronJob, CronStore } from "../../core/cron/store";
+import { sendCronTelegramNotification } from "../../core/telegram/notify";
 
 dotenv.config({ quiet: true });
 
@@ -21,6 +22,55 @@ const runningJobs = new Set<string>();
 
 let codexCommandResolved = "";
 
+async function notifyCronResult(input: {
+  job: CronJob;
+  sessionName: string | null;
+  status: "ok" | "error";
+  output: string;
+  error: string | null;
+  exitCode: number | null;
+  durationMs: number;
+}): Promise<void> {
+  if (!config.cronNotifyTelegram || !config.telegramBotToken) {
+    return;
+  }
+
+  try {
+    await sendCronTelegramNotification({
+      botToken: config.telegramBotToken,
+      chatId: input.job.chatId,
+      maxChars: config.cronNotifyMaxChars,
+      verbose: config.cronNotifyVerbose,
+      job: input.job,
+      sessionName: input.sessionName,
+      status: input.status,
+      prompt: input.job.prompt,
+      output: input.output,
+      error: input.error,
+      exitCode: input.exitCode,
+      durationMs: input.durationMs
+    });
+  } catch (err) {
+    console.error(`[cron] telegram notify failed for ${input.job.id}:`, err);
+  }
+}
+
+async function markFailureAndNotify(job: CronJob, sessionName: string | null, reason: string): Promise<void> {
+  await cronStore.markRunResult(job.id, false, reason);
+  await notifyCronResult({
+    job,
+    sessionName,
+    status: "error",
+    output: "",
+    error: reason,
+    exitCode: null,
+    durationMs: 0
+  });
+  if (job.runOnce) {
+    await cronStore.remove(job.id);
+  }
+}
+
 async function executeJob(jobId: string): Promise<void> {
   if (runningJobs.has(jobId)) {
     return;
@@ -35,22 +85,11 @@ async function executeJob(jobId: string): Promise<void> {
       return;
     }
 
-    let resolvedSessionId: string | null = null;
+    let session;
     try {
-      resolvedSessionId = sessionStore.resolveSessionId(job.sessionTarget, job.chatId);
+      session = sessionStore.ensureSessionForTarget(job.chatId, job.sessionTarget);
     } catch (err) {
-      await cronStore.markRunResult(job.id, false, String(err));
-      return;
-    }
-
-    if (!resolvedSessionId) {
-      await cronStore.markRunResult(job.id, false, `Session not found: ${job.sessionTarget}`);
-      return;
-    }
-
-    const session = sessionStore.getSession(resolvedSessionId);
-    if (!session) {
-      await cronStore.markRunResult(job.id, false, `Session not found: ${resolvedSessionId}`);
+      await markFailureAndNotify(job, null, String(err));
       return;
     }
 
@@ -90,10 +129,29 @@ async function executeJob(jobId: string): Promise<void> {
       durationMs: result.durationMs
     });
 
-    await cronStore.markRunResult(job.id, (result.exitCode ?? 1) === 0, result.error);
+    const ok = (result.exitCode ?? 1) === 0;
+    await cronStore.markRunResult(job.id, ok, result.error);
+    await notifyCronResult({
+      job,
+      sessionName: session.id,
+      status: ok ? "ok" : "error",
+      output: result.output,
+      error: result.error,
+      exitCode: result.exitCode,
+      durationMs: result.durationMs
+    });
+    if (job.runOnce) {
+      await cronStore.remove(job.id);
+    }
+
     console.log(`[cron] job ${job.id} ran for slot ${session.shortId} (exit=${result.exitCode ?? "null"})`);
   } catch (err) {
-    await cronStore.markRunResult(jobId, false, String(err));
+    const job = cronStore.get(jobId);
+    if (job) {
+      await markFailureAndNotify(job, null, String(err));
+    } else {
+      await cronStore.markRunResult(jobId, false, String(err));
+    }
     console.error(`[cron] job ${jobId} failed:`, err);
   } finally {
     runningJobs.delete(jobId);
@@ -116,7 +174,7 @@ export async function startCronWorker(): Promise<void> {
   const resolved = await resolveCodexCommand(config.codexCommand);
   codexCommandResolved = resolved.command;
 
-  console.log(`[cron] worker started; poll=${pollMs}ms`);
+  console.log(`[cron] worker started; poll=${pollMs}ms notify=${config.cronNotifyTelegram ? "on" : "off"}`);
   await tick();
   const timer = setInterval(() => {
     void tick();
@@ -135,4 +193,3 @@ export async function startCronWorker(): Promise<void> {
 if (require.main === module) {
   void startCronWorker();
 }
-

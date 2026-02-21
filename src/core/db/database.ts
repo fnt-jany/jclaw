@@ -52,6 +52,22 @@ function ensureActiveSessionsTable(db: Database.Database): void {
 }
 
 
+
+
+function ensureCronJobsTable(db: Database.Database): void {
+  const columns = db
+    .prepare("PRAGMA table_info(cron_jobs)")
+    .all() as Array<{ name: string }>;
+  const hasRunOnce = columns.some((col) => col.name === "run_once");
+  if (hasRunOnce) {
+    return;
+  }
+
+  db.exec(`
+    ALTER TABLE cron_jobs ADD COLUMN run_once INTEGER NOT NULL DEFAULT 0;
+  `);
+}
+
 function ensureSchema(db: Database.Database): void {
   db.pragma("journal_mode = WAL");
   db.pragma("busy_timeout = 5000");
@@ -125,6 +141,7 @@ function ensureSchema(db: Database.Database): void {
       cron TEXT NOT NULL,
       prompt TEXT NOT NULL,
       timezone TEXT,
+      run_once INTEGER NOT NULL DEFAULT 0,
       next_run_at TEXT NOT NULL,
       last_run_at TEXT,
       last_status TEXT,
@@ -138,6 +155,7 @@ function ensureSchema(db: Database.Database): void {
   `);
 
   ensureActiveSessionsTable(db);
+  ensureCronJobsTable(db);
 }
 
 export function openDb(dbFile: string): Database.Database {

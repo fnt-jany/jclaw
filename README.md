@@ -18,9 +18,12 @@ Main `.env` values:
 
 - `TELEGRAM_BOT_TOKEN`: from BotFather
 - `ALLOWED_CHAT_IDS`: allowed chat ids (comma-separated)
-- `DATA_FILE`: legacy JSON path for migration/manual compatibility (`./data/sessions.json`)
+- `DATA_FILE`: interaction log JSON path (`./data/interactions.json`)
 - `DB_FILE`: SQLite file path (default `./data/jclaw.db`)
 - `CODEX_COMMAND`, `CODEX_ARGS_TEMPLATE`, `CODEX_WORKDIR`
+- `CRON_NOTIFY_TELEGRAM`: cron result Telegram notification on/off (`true|false`)
+- `CRON_NOTIFY_MAX_CHARS`: max chars per cron notification message
+- `CRON_NOTIFY_VERBOSE`: detailed cron notification (`true`) or compact output (`false`)
 
 `CODEX_COMMAND=auto` tries PATH first, then VS Code extension paths on Windows.
 

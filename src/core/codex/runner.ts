@@ -37,34 +37,49 @@ function buildArgs(input: RunInput): string[] {
   const parsed = parseArgsStringToArgv(argsString);
 
   if (input.codexSessionId && parsed[0] === "exec" && !parsed.includes("resume")) {
-    const tail = parsed.slice(1);
-    const promptIdx = tail.lastIndexOf(input.prompt);
-    const options = promptIdx >= 0 ? [...tail.slice(0, promptIdx), ...tail.slice(promptIdx + 1)] : tail;
+    // Derive resume options from the raw template so prompt text is never mistaken as an option value.
+    const templateTokens = parseArgsStringToArgv(input.codexArgsTemplate).slice(1);
+    const options = templateTokens.filter((token) => token.startsWith("-"));
     return ["exec", "resume", ...options, input.codexSessionId, input.prompt];
   }
 
   return parsed;
 }
 
+
 export async function runCodex(input: RunInput): Promise<RunResult> {
   const started = Date.now();
   const args = buildArgs(input);
 
   return new Promise<RunResult>((resolve) => {
-    const child = spawn(input.codexCommand, args, {
-      env: {
-        ...process.env,
-        ...(input.codexNodeOptions ? { NODE_OPTIONS: input.codexNodeOptions } : {})
-      },
-      cwd: input.workdir,
-      shell: false,
-      windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-
+    let child: ReturnType<typeof spawn>;
     let stdout = "";
     let stderr = "";
     let settled = false;
+
+    try {
+      child = spawn(input.codexCommand, args, {
+        env: {
+          ...process.env,
+          ...(input.codexNodeOptions ? { NODE_OPTIONS: input.codexNodeOptions } : {})
+        },
+        cwd: input.workdir,
+        shell: false,
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "pipe"]
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      resolve({
+        output: "",
+        error: `Failed to execute command: ${message}`,
+        exitCode: null,
+        durationMs: Date.now() - started,
+        codexSessionId: null
+      });
+      return;
+    }
+
 
     const timer = setTimeout(() => {
       if (!settled) {
@@ -80,13 +95,13 @@ export async function runCodex(input: RunInput): Promise<RunResult> {
       }
     }, input.timeoutMs);
 
-    child.stdout.on("data", (chunk) => {
+    child.stdout?.on("data", (chunk) => {
       const text = String(chunk);
       stdout += text;
       input.onStdoutChunk?.(text);
     });
 
-    child.stderr.on("data", (chunk) => {
+    child.stderr?.on("data", (chunk) => {
       const text = String(chunk);
       stderr += text;
       input.onStderrChunk?.(text);
@@ -125,3 +140,6 @@ export async function runCodex(input: RunInput): Promise<RunResult> {
     });
   });
 }
+
+
+

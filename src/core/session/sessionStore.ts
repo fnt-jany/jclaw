@@ -165,6 +165,32 @@ export class SessionStore {
     return null;
   }
 
+  ensureSessionForTarget(chatId: string, target: string): Session {
+    const resolved = this.resolveSessionId(target, chatId);
+    if (resolved) {
+      const existing = this.getSession(resolved);
+      if (!existing) {
+        throw new Error(`Session not found: ${target}`);
+      }
+      return existing;
+    }
+
+    const slot = target.trim().toUpperCase() as SlotId;
+    if (!SLOT_IDS.includes(slot)) {
+      throw new Error(`Session not found: ${target}`);
+    }
+
+    const session = this.createSession(chatId, slot);
+    this.db
+      .prepare(
+        `INSERT INTO sessions (id, short_id, chat_id, codex_session_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      )
+      .run(session.id, session.shortId, session.chatId, session.codexSessionId, session.createdAt, session.updatedAt);
+
+    return session;
+  }
+
   getSession(sessionId: string): Session | null {
     const row = this.db
       .prepare(

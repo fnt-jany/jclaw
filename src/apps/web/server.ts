@@ -8,6 +8,7 @@ import { runCodex } from "../../core/codex/runner";
 import { resolveCodexCommand } from "../../core/commands/resolver";
 import { InteractionLogger } from "../../core/logging/interactionLogger";
 import { CronStore } from "../../core/cron/store";
+import { buildOneShotCron } from "../../core/cron/oneshot";
 import { parseArgs } from "../../core/commands/args";
 import { DEFAULT_LOCAL_CHAT_ID, LOG_COMMAND, SLOT_TARGET_HINT, TEXT } from "../../shared/constants";
 import { CommandResult, sessionSummary } from "../../shared/types";
@@ -121,6 +122,7 @@ async function handleCronCommand(chatId: string, cmdLine: string, session: Sessi
         "Usage:",
         "/cron list",
         '/cron add --session A --cron "*/5 * * * *" --prompt "status report" [--tz Asia/Seoul]',
+        '/cron once --session A --at "2026-02-21T16:00:00+09:00" --prompt "one shot"',
         "/cron remove <job_id>",
         "/cron enable <job_id>",
         "/cron disable <job_id>"
@@ -141,7 +143,7 @@ async function handleCronCommand(chatId: string, cmdLine: string, session: Sessi
         ? jobs
             .map(
               (j) =>
-                `${j.id} | ${j.enabled ? "on" : "off"} | session=${j.sessionTarget} | cron=${j.cron}` +
+                `${j.id} | ${j.enabled ? "on" : "off"}${j.runOnce ? " | once" : ""} | session=${j.sessionTarget} | cron=${j.cron}` +
                 `${j.timezone ? ` tz=${j.timezone}` : ""} | next=${j.nextRunAt} | last=${j.lastRunAt ?? "-"} | status=${j.lastStatus ?? "-"}`
             )
             .join("\n")
@@ -152,20 +154,59 @@ async function handleCronCommand(chatId: string, cmdLine: string, session: Sessi
     };
   }
 
-  if (sub === "add") {
-    const sessionTarget = parsed.flags.session ?? "A";
-    const cron = parsed.flags.cron;
-    const prompt = parsed.flags.prompt;
-    const timezone = parsed.flags.tz ?? null;
 
-    if (!cron || !prompt) {
+  if (sub === "once") {
+    const sessionTarget = parsed.flags.session;
+    const at = parsed.flags.at;
+    const prompt = parsed.flags.prompt;
+
+    if (!sessionTarget || !at || !prompt) {
       return {
-        reply: 'Missing --cron or --prompt. Example: /cron add --session A --cron "*/5 * * * *" --prompt "status report"',
+        reply: 'Missing --session, --at or --prompt. Example: /cron once --session A --at "2026-02-21T16:00:00+09:00" --prompt "status report"',
         sessionSlot: session.shortId,
         sessionName: session.id,
         logEnabled: interactionLogger.isEnabled()
       };
     }
+
+    store.ensureSessionForTarget(chatId, sessionTarget);
+
+    const oneShot = buildOneShotCron(at);
+    const job = await cronStore.create({
+      chatId,
+      sessionTarget,
+      cron: oneShot.cron,
+      prompt,
+      timezone: null,
+      runOnce: true
+    });
+
+    return {
+      reply: `Created one-shot ${job.id}
+runAt=${oneShot.runAt.toISOString()}
+next=${job.nextRunAt}`,
+      sessionSlot: session.shortId,
+      sessionName: session.id,
+      logEnabled: interactionLogger.isEnabled()
+    };
+  }
+
+  if (sub === "add") {
+    const sessionTarget = parsed.flags.session;
+    const cron = parsed.flags.cron;
+    const prompt = parsed.flags.prompt;
+    const timezone = parsed.flags.tz ?? null;
+
+    if (!sessionTarget || !cron || !prompt) {
+      return {
+        reply: 'Missing --session, --cron or --prompt. Example: /cron add --session A --cron "*/5 * * * *" --prompt "status report"',
+        sessionSlot: session.shortId,
+        sessionName: session.id,
+        logEnabled: interactionLogger.isEnabled()
+      };
+    }
+
+    store.ensureSessionForTarget(chatId, sessionTarget);
 
     const job = await cronStore.create({ chatId, sessionTarget, cron, prompt, timezone });
     return {
@@ -639,4 +680,5 @@ export async function startWebServer(): Promise<void> {
 if (require.main === module) {
   void startWebServer();
 }
+
 

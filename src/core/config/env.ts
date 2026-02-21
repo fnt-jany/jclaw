@@ -11,7 +11,10 @@ const schema = z.object({
   CODEX_WORKDIR: z.string().default("."),
   CODEX_TIMEOUT_MS: z.coerce.number().int().positive().default(120000),
   MAX_OUTPUT_CHARS: z.coerce.number().int().positive().default(3500),
-  CODEX_NODE_OPTIONS: z.string().default("")
+  CODEX_NODE_OPTIONS: z.string().default(""),
+  CRON_NOTIFY_TELEGRAM: z.string().default("false"),
+  CRON_NOTIFY_MAX_CHARS: z.coerce.number().int().positive().default(1200),
+  CRON_NOTIFY_VERBOSE: z.string().default("true")
 });
 
 export type AppConfig = {
@@ -25,7 +28,14 @@ export type AppConfig = {
   codexTimeoutMs: number;
   maxOutputChars: number;
   codexNodeOptions: string;
+  cronNotifyTelegram: boolean;
+  cronNotifyMaxChars: number;
+  cronNotifyVerbose: boolean;
 };
+
+function parseBoolean(value: string): boolean {
+  return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
+}
 
 export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
   const parsed = schema.parse(env);
@@ -48,6 +58,9 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     codexWorkdir: path.resolve(parsed.CODEX_WORKDIR),
     codexTimeoutMs: parsed.CODEX_TIMEOUT_MS,
     maxOutputChars: parsed.MAX_OUTPUT_CHARS,
-    codexNodeOptions: parsed.CODEX_NODE_OPTIONS
+    codexNodeOptions: parsed.CODEX_NODE_OPTIONS,
+    cronNotifyTelegram: parseBoolean(parsed.CRON_NOTIFY_TELEGRAM),
+    cronNotifyMaxChars: parsed.CRON_NOTIFY_MAX_CHARS,
+    cronNotifyVerbose: parseBoolean(parsed.CRON_NOTIFY_VERBOSE)
   };
 }
