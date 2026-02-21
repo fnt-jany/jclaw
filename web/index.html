@@ -1,0 +1,246 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>jclaw web chat</title>
+  <style>
+    :root {
+      --bg: #f3efe7;
+      --panel: #fffdf7;
+      --ink: #1f2933;
+      --muted: #5b6977;
+      --accent: #1f6feb;
+      --accent-2: #1549a5;
+      --line: #d7dee7;
+      --user: #dbeafe;
+      --bot: #ecfdf3;
+      --warn: #fff1f2;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: radial-gradient(circle at top right, #ffe7d1, transparent 45%), var(--bg);
+      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 18px;
+    }
+    .app {
+      width: min(980px, 100%);
+      height: min(92vh, 920px);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      display: grid;
+      grid-template-rows: auto auto 1fr auto;
+      overflow: hidden;
+      box-shadow: 0 16px 36px rgba(0,0,0,.08);
+    }
+    .top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(90deg, #fff, #f7fbff);
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .brand { font-weight: 700; letter-spacing: .2px; }
+    .status { color: var(--muted); font-size: 13px; }
+    .controls {
+      display: grid;
+      grid-template-columns: 1fr auto auto;
+      gap: 8px;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+    }
+    input, button {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font: inherit;
+    }
+    button {
+      cursor: pointer;
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+      transition: background .15s ease;
+    }
+    button:hover { background: var(--accent-2); }
+    #log {
+      overflow: auto;
+      padding: 14px;
+      display: grid;
+      gap: 10px;
+      align-content: start;
+      background: linear-gradient(180deg, #fffbf3 0%, #f9fdf9 100%);
+    }
+    .bubble {
+      max-width: min(78ch, 90%);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px 12px;
+      white-space: pre-wrap;
+      line-height: 1.45;
+      font-size: 14px;
+    }
+    .user {
+      margin-left: auto;
+      background: var(--user);
+    }
+    .bot {
+      margin-right: auto;
+      background: var(--bot);
+    }
+    .err {
+      margin-right: auto;
+      background: var(--warn);
+    }
+    .composer {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      padding: 12px;
+      border-top: 1px solid var(--line);
+      background: #fff;
+    }
+    @media (max-width: 720px) {
+      .controls { grid-template-columns: 1fr; }
+      .composer { grid-template-columns: 1fr; }
+      button { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <section class="top">
+      <div class="brand">jclaw web chat</div>
+      <div id="status" class="status">connecting...</div>
+    </section>
+
+    <section class="controls">
+      <input id="chatId" placeholder="chat id" />
+      <button id="refreshBtn" type="button">Refresh</button>
+      <button id="useA" type="button">Use Slot A</button>
+    </section>
+
+    <section id="log"></section>
+
+    <form id="composer" class="composer">
+      <input id="message" autocomplete="off" placeholder="Type message or /command" />
+      <button type="submit">Send</button>
+    </form>
+  </main>
+
+  <script>
+    const statusEl = document.getElementById('status');
+    const chatIdEl = document.getElementById('chatId');
+    const logEl = document.getElementById('log');
+    const messageEl = document.getElementById('message');
+    const composerEl = document.getElementById('composer');
+    const refreshBtn = document.getElementById('refreshBtn');
+    const useABtn = document.getElementById('useA');
+
+    const KEY_CHAT_ID = 'jclaw_web_chat_id';
+
+    function appendBubble(text, type = 'bot') {
+      const div = document.createElement('div');
+      div.className = `bubble ${type}`;
+      div.textContent = text;
+      logEl.appendChild(div);
+      logEl.scrollTop = logEl.scrollHeight;
+      return div;
+    }
+
+    function setStatus(s) {
+      statusEl.textContent = s;
+    }
+
+    async function fetchState() {
+      const chatId = (chatIdEl.value || '').trim();
+      const q = chatId ? `?chatId=${encodeURIComponent(chatId)}` : '';
+      const res = await fetch(`/api/state${q}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'state failed');
+      chatIdEl.value = data.chatId;
+      localStorage.setItem(KEY_CHAT_ID, data.chatId);
+      setStatus(`slot=${data.sessionSlot} | session=${data.sessionName} | log=${data.logEnabled ? 'ON' : 'OFF'}`);
+      return data;
+    }
+
+    async function sendMessage(text) {
+      const chatId = (chatIdEl.value || '').trim();
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId, message: text })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'send failed');
+      setStatus(`slot=${data.sessionSlot} | session=${data.sessionName} | log=${data.logEnabled ? 'ON' : 'OFF'}`);
+      return data;
+    }
+
+    composerEl.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const text = messageEl.value.trim();
+      if (!text) return;
+      appendBubble(text, 'user');
+      messageEl.value = '';
+      const pending = appendBubble('processing...', 'bot');
+      let dots = 0;
+      const ticker = setInterval(() => {
+        dots = (dots + 1) % 4;
+        pending.textContent = `processing${'.'.repeat(dots)}`;
+      }, 1200);
+
+      try {
+        const data = await sendMessage(text);
+        pending.textContent = data.reply;
+      } catch (err) {
+        pending.className = 'bubble err';
+        pending.textContent = String(err);
+      } finally {
+        clearInterval(ticker);
+      }
+    });
+
+    refreshBtn.addEventListener('click', async () => {
+      try {
+        await fetchState();
+      } catch (err) {
+        appendBubble(String(err), 'err');
+      }
+    });
+
+    useABtn.addEventListener('click', async () => {
+      try {
+        appendBubble('/session A', 'user');
+        const data = await sendMessage('/session A');
+        appendBubble(data.reply, 'bot');
+      } catch (err) {
+        appendBubble(String(err), 'err');
+      }
+    });
+
+    (async () => {
+      const saved = localStorage.getItem(KEY_CHAT_ID);
+      if (saved) chatIdEl.value = saved;
+      try {
+        const state = await fetchState();
+        appendBubble('Connected. Try /help or ask directly.', 'bot');
+        appendBubble(`Current slot ${state.sessionSlot}`, 'bot');
+      } catch (err) {
+        appendBubble(String(err), 'err');
+      }
+      messageEl.focus();
+    })();
+  </script>
+</body>
+</html>
