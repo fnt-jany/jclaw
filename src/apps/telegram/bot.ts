@@ -7,7 +7,6 @@ import { SessionStore } from "../../core/session/sessionStore";
 import { runCodex } from "../../core/codex/runner";
 import { resolveCodexCommand } from "../../core/commands/resolver";
 import { InteractionLogger } from "../../core/logging/interactionLogger";
-import { listUnhandledTelegramCrashLogs, markTelegramCrashLogsProcessed } from "../../core/logging/telegramCrashLog";
 import { CronStore } from "../../core/cron/store";
 import { buildOneShotCron } from "../../core/cron/oneshot";
 import { parseArgs } from "../../core/commands/args";
@@ -19,7 +18,6 @@ dotenv.config({ quiet: true });
 const config = loadConfig(process.env);
 const dataDir = path.dirname(config.dataFile);
 const interactionLogPath = path.join(dataDir, "interactions.json");
-const crashLogPath = path.join(dataDir, "telegram-crash-logs.json");
 
 const store = new SessionStore(config.dbFile);
 const interactionLogger = new InteractionLogger(interactionLogPath);
@@ -55,87 +53,6 @@ function formatResult(output: string, error: string | null, maxChars: number): s
 
 function chatIdOf(ctx: Context): string | null {
   return ctx.chat?.id?.toString() ?? null;
-}
-
-function buildCrashLogPrompt(rows: Array<{ id: string; timestamp: string; source: string; message: string; stack: string }>): string {
-  const header = [
-    "Review these Telegram crash logs.",
-    "Summarize likely cause, immediate checks, and prevention steps.",
-    ""
-  ];
-
-  const body = rows.map((row, idx) => {
-    const stackLines = row.stack
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .slice(0, 20)
-      .join("\n");
-
-    return [
-      `${idx + 1}) id=${row.id}`,
-      `time=${row.timestamp}`,
-      `source=${row.source}`,
-      `message=${row.message}`,
-      "stack=",
-      stackLines || "(empty)",
-      ""
-    ].join("\n");
-  });
-
-  return [...header, ...body].join("\n");
-}
-
-async function requestCrashLogHandlingToSectionJ(resolvedCodexCommand: string): Promise<void> {
-  const pending = listUnhandledTelegramCrashLogs(crashLogPath);
-  if (!pending.length) {
-    return;
-  }
-
-  const chatId = Array.from(config.allowedChatIds)[0];
-  if (!chatId) {
-    console.error("[jclaw] pending telegram crash logs found, but ALLOWED_CHAT_IDS is empty.");
-    return;
-  }
-
-  const session = store.ensureSessionForTarget(chatId, "J");
-  const prompt = buildCrashLogPrompt(pending);
-  const result = await runCodex({
-    codexCommand: resolvedCodexCommand,
-    codexArgsTemplate: config.codexArgsTemplate,
-    prompt,
-    sessionId: session.id,
-    codexSessionId: session.codexSessionId,
-    timeoutMs: config.codexTimeoutMs,
-    workdir: config.codexWorkdir,
-    codexNodeOptions: config.codexNodeOptions
-  });
-
-  if (result.codexSessionId && result.codexSessionId !== session.codexSessionId) {
-    store.setCodexSessionId(session.id, result.codexSessionId);
-  }
-
-  store.appendRun(session.id, {
-    id: `r_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
-    timestamp: new Date().toISOString(),
-    input: "[system] process telegram crash logs",
-    output: result.output,
-    error: result.error,
-    exitCode: result.exitCode,
-    durationMs: result.durationMs
-  });
-
-  const note = result.error
-    ? `requested-to-section-J (error: ${result.error.slice(0, 160)})`
-    : `requested-to-section-J (exit=${result.exitCode ?? "null"})`;
-
-  markTelegramCrashLogsProcessed(
-    crashLogPath,
-    pending.map((row) => row.id),
-    note
-  );
-
-  console.log(`[jclaw] requested crash-log handling to session J for ${pending.length} item(s)`);
 }
 
 async function handleCronCommand(chatId: string, text: string): Promise<string> {
@@ -636,7 +553,6 @@ export async function startTelegramBot(): Promise<void> {
   const resolved = await resolveCodexCommand(config.codexCommand);
   console.log(`[jclaw] codex command resolved: ${resolved.command} (${resolved.source})`);
 
-  await requestCrashLogHandlingToSectionJ(resolved.command);
 
   const bot = new Telegraf(config.telegramBotToken);
   attachHandlers(bot, resolved.command);
