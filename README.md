@@ -18,6 +18,7 @@ Main `.env` values:
 
 - `TELEGRAM_BOT_TOKEN`: from BotFather
 - `ALLOWED_CHAT_IDS`: allowed chat ids (comma-separated)
+- `ADMIN_CHAT_IDS`: admin chat ids for `/admin` command (comma-separated, empty => fallback to allowed ids)
 - `DATA_FILE`: interaction log JSON path (`./data/interactions.json`)
 - `DB_FILE`: SQLite file path (default `./data/jclaw.db`)
 - `CODEX_COMMAND`, `CODEX_ARGS_TEMPLATE`, `CODEX_WORKDIR`
@@ -72,6 +73,7 @@ npm run admin:slots -- import --file data/manual-slot-bindings.json
 - `/log <on|off|status>`
 - `/cron ...`
 - `/slot ...`
+- `/admin <status|restart>`
 
 ## Storage
 
@@ -90,4 +92,22 @@ npm run build
 git init
 git add .
 git commit -m "chore: bootstrap jclaw"
+```
+
+## Telegram Restart Ops
+
+Use `/admin restart` from an admin chat to restart the bot process.
+Run the bot under PM2 so it auto-recovers after exit:
+
+```powershell
+npm install -g pm2
+npm run pm2:telegram:start
+```
+
+Useful commands:
+
+```powershell
+npm run pm2:telegram:restart
+npm run pm2:telegram:stop
+npm run pm2:telegram:logs
 ```

@@ -4,6 +4,7 @@ import path from "node:path";
 const schema = z.object({
   TELEGRAM_BOT_TOKEN: z.string().default(""),
   ALLOWED_CHAT_IDS: z.string().default(""),
+  ADMIN_CHAT_IDS: z.string().default(""),
   DATA_FILE: z.string().default("./data/interactions.json"),
   DB_FILE: z.string().default(""),
   CODEX_COMMAND: z.string().default("auto"),
@@ -20,6 +21,7 @@ const schema = z.object({
 export type AppConfig = {
   telegramBotToken: string;
   allowedChatIds: Set<string>;
+  adminChatIds: Set<string>;
   dataFile: string;
   dbFile: string;
   codexCommand: string;
@@ -48,6 +50,11 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     telegramBotToken: parsed.TELEGRAM_BOT_TOKEN,
     allowedChatIds: new Set(
       parsed.ALLOWED_CHAT_IDS.split(",")
+        .map((v) => v.trim())
+        .filter(Boolean)
+    ),
+    adminChatIds: new Set(
+      parsed.ADMIN_CHAT_IDS.split(",")
         .map((v) => v.trim())
         .filter(Boolean)
     ),

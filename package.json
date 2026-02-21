@@ -1,38 +1,40 @@
 {
-    "name":  "jclaw",
-    "version":  "1.0.0",
-    "description":  "jclaw: Telegram + Windows bridge for Codex CLI sessions",
-    "main":  "dist/main/telegram.js",
-    "scripts":  {
-                    "test":  "npm run build",
-                    "build":  "tsc -p tsconfig.json",
-                    "start":  "node dist/main/telegram.js",
-                    "dev":  "tsx src/main/telegram.ts",
-                    "cli":  "tsx src/main/cli.ts",
-                    "chat":  "tsx src/main/chat.ts",
-                    "web":  "tsx src/main/web.ts",
-                    "cron:worker":  "tsx src/main/cronWorker.ts",
-                    "cron:cli":  "tsx src/main/cronCli.ts",
-                    "admin:slots":  "tsx src/main/adminSlots.ts"
-                },
-    "keywords":  [
-
-                 ],
-    "author":  "",
-    "license":  "ISC",
-    "type":  "commonjs",
-    "dependencies":  {
-                         "better-sqlite3":  "^12.6.2",
-                         "cron-parser":  "^5.5.0",
-                         "dotenv":  "^17.3.1",
-                         "string-argv":  "^0.3.2",
-                         "telegraf":  "^4.16.3",
-                         "zod":  "^4.3.6"
-                     },
-    "devDependencies":  {
-                            "@types/node":  "^25.3.0",
-                            "tsx":  "^4.21.0",
-                            "typescript":  "^5.9.3",
-                            "@types/better-sqlite3":  "^7.6.13"
-                        }
+  "name": "jclaw",
+  "version": "1.0.0",
+  "description": "jclaw: Telegram + Windows bridge for Codex CLI sessions",
+  "main": "dist/main/telegram.js",
+  "scripts": {
+    "test": "npm run build",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main/telegram.js",
+    "dev": "tsx src/main/telegram.ts",
+    "cli": "tsx src/main/cli.ts",
+    "chat": "tsx src/main/chat.ts",
+    "web": "tsx src/main/web.ts",
+    "cron:worker": "tsx src/main/cronWorker.ts",
+    "cron:cli": "tsx src/main/cronCli.ts",
+    "admin:slots": "tsx src/main/adminSlots.ts",
+    "pm2:telegram:start": "pm2 start ecosystem.telegram.cjs --only jclaw-telegram",
+    "pm2:telegram:restart": "pm2 restart jclaw-telegram",
+    "pm2:telegram:stop": "pm2 stop jclaw-telegram",
+    "pm2:telegram:logs": "pm2 logs jclaw-telegram"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "better-sqlite3": "^12.6.2",
+    "cron-parser": "^5.5.0",
+    "dotenv": "^17.3.1",
+    "string-argv": "^0.3.2",
+    "telegraf": "^4.16.3",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "@types/better-sqlite3": "^7.6.13"
+  }
 }
