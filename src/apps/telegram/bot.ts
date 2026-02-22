@@ -239,99 +239,108 @@ function attachHandlers(bot: Telegraf, resolvedCodexCommand: string): void {
     }
 
     sessionLocks.add(session.id);
-    await ctx.reply(`Running in session ${session.shortId}...`);
-
-    const TYPING_MIN_INTERVAL_MS = 4000;
-    let lastTypingAt = 0;
-    let typingInFlight = false;
-
-    const maybeSendTyping = (): void => {
-      const now = Date.now();
-      if (typingInFlight || now - lastTypingAt < TYPING_MIN_INTERVAL_MS) {
-        return;
-      }
-
-      typingInFlight = true;
-      lastTypingAt = now;
-      void bot.telegram
-        .sendChatAction(chatId, "typing")
-        .catch(() => {
-          // ignore transient typing send errors
-        })
-        .finally(() => {
-          typingInFlight = false;
-        });
-    };
-
-    const onChunk = (): void => {
-      maybeSendTyping();
-    };
-
     try {
-      const planMode = store.getPlanMode(session.id);
-      const effectivePrompt = applyPlanModePrompt(prompt, planMode);
-      maybeSendTyping();
-
-      const result = await runCodex({
-        codexCommand: resolvedCodexCommand,
-        codexArgsTemplate: config.codexArgsTemplate,
-        prompt: effectivePrompt,
-        sessionId: session.id,
-        codexSessionId: session.codexSessionId,
-        timeoutMs: config.codexTimeoutMs,
-        workdir: config.codexWorkdir,
-        codexNodeOptions: config.codexNodeOptions,
-        onStdoutChunk: onChunk,
-        onStderrChunk: onChunk
-      });
-
-      if (result.codexSessionId && result.codexSessionId !== session.codexSessionId) {
-        store.setCodexSessionId(session.id, result.codexSessionId);
-      }
-
-      store.appendRun(session.id, {
-        id: `r_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
-        timestamp: new Date().toISOString(),
-        input: prompt,
-        output: result.output,
-        error: result.error,
-        exitCode: result.exitCode,
-        durationMs: result.durationMs
-      });
-
-      const interactionId = await interactionLogger.append({
-        channel: "telegram",
-        sessionId: session.id,
-        chatId,
-        input: prompt,
-        output: result.output,
-        error: result.error,
-        exitCode: result.exitCode,
-        durationMs: result.durationMs
-      });
-
-      const completionMessage = formatResult(result.output, result.error, config.maxOutputChars);
-
-      if (!interactionLogger.isEnabled()) {
-        await ctx.reply(completionMessage);
-      } else {
-        const headerLines: string[] = [];
-        if (interactionId !== null) {
-          headerLines.push(`Req#: ${interactionId}`);
-        }
-        headerLines.push(sessionSummary(session));
-        if ((result.exitCode ?? 0) !== 0) {
-          headerLines.push(`Exit: ${result.exitCode ?? "null"}`);
-        }
-        if (result.durationMs > 20000) {
-          headerLines.push(`Time: ${result.durationMs}ms`);
-        }
-
-        await ctx.reply(`${headerLines.join("\n")}\n\n${completionMessage}`);
-      }
-    } finally {
+      await ctx.reply(`Running in session ${session.shortId}...`);
+    } catch {
       sessionLocks.delete(session.id);
+      return;
     }
+
+    void (async () => {
+      const TYPING_MIN_INTERVAL_MS = 4000;
+      let lastTypingAt = 0;
+      let typingInFlight = false;
+
+      const maybeSendTyping = (): void => {
+        const now = Date.now();
+        if (typingInFlight || now - lastTypingAt < TYPING_MIN_INTERVAL_MS) {
+          return;
+        }
+
+        typingInFlight = true;
+        lastTypingAt = now;
+        void bot.telegram
+          .sendChatAction(chatId, "typing")
+          .catch(() => {
+            // ignore transient typing send errors
+          })
+          .finally(() => {
+            typingInFlight = false;
+          });
+      };
+
+      const onChunk = (): void => {
+        maybeSendTyping();
+      };
+
+      try {
+        const planMode = store.getPlanMode(session.id);
+        const effectivePrompt = applyPlanModePrompt(prompt, planMode);
+        maybeSendTyping();
+
+        const result = await runCodex({
+          codexCommand: resolvedCodexCommand,
+          codexArgsTemplate: config.codexArgsTemplate,
+          prompt: effectivePrompt,
+          sessionId: session.id,
+          codexSessionId: session.codexSessionId,
+          timeoutMs: config.codexTimeoutMs,
+          workdir: config.codexWorkdir,
+          codexNodeOptions: config.codexNodeOptions,
+          onStdoutChunk: onChunk,
+          onStderrChunk: onChunk
+        });
+
+        if (result.codexSessionId && result.codexSessionId !== session.codexSessionId) {
+          store.setCodexSessionId(session.id, result.codexSessionId);
+        }
+
+        store.appendRun(session.id, {
+          id: `r_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
+          timestamp: new Date().toISOString(),
+          input: prompt,
+          output: result.output,
+          error: result.error,
+          exitCode: result.exitCode,
+          durationMs: result.durationMs
+        });
+
+        const interactionId = await interactionLogger.append({
+          channel: "telegram",
+          sessionId: session.id,
+          chatId,
+          input: prompt,
+          output: result.output,
+          error: result.error,
+          exitCode: result.exitCode,
+          durationMs: result.durationMs
+        });
+
+        const completionMessage = formatResult(result.output, result.error, config.maxOutputChars);
+
+        if (!interactionLogger.isEnabled()) {
+          await bot.telegram.sendMessage(chatId, completionMessage);
+        } else {
+          const headerLines: string[] = [];
+          if (interactionId !== null) {
+            headerLines.push(`Req#: ${interactionId}`);
+          }
+          headerLines.push(sessionSummary(session));
+          if ((result.exitCode ?? 0) !== 0) {
+            headerLines.push(`Exit: ${result.exitCode ?? "null"}`);
+          }
+          if (result.durationMs > 20000) {
+            headerLines.push(`Time: ${result.durationMs}ms`);
+          }
+
+          await bot.telegram.sendMessage(chatId, `${headerLines.join("\n")}\n\n${completionMessage}`);
+        }
+      } catch (err) {
+        await bot.telegram.sendMessage(chatId, `Failed to process prompt: ${String(err)}`);
+      } finally {
+        sessionLocks.delete(session.id);
+      }
+    })();
   }
 
 
@@ -899,7 +908,7 @@ export async function startTelegramBot(): Promise<void> {
   console.log(`[jclaw] codex command resolved: ${resolved.command} (${resolved.source})`);
 
 
-  const bot = new Telegraf(config.telegramBotToken);
+  const bot = new Telegraf(config.telegramBotToken, { handlerTimeout: 600000 });
   attachHandlers(bot, resolved.command);
 
   await bot.telegram.setMyCommands([

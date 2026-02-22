@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -16,8 +16,12 @@
       --user: #dbeafe;
       --bot: #ecfdf3;
       --warn: #fff1f2;
+      --tab: #f5f8fd;
+      --tab-active: #1f6feb;
     }
+
     * { box-sizing: border-box; }
+
     body {
       margin: 0;
       color: var(--ink);
@@ -28,6 +32,7 @@
       place-items: center;
       padding: 18px;
     }
+
     .app {
       width: min(980px, 100%);
       height: min(92vh, 920px);
@@ -37,42 +42,82 @@
       display: grid;
       grid-template-rows: auto auto 1fr auto;
       overflow: hidden;
-      box-shadow: 0 16px 36px rgba(0,0,0,.08);
+      box-shadow: 0 16px 36px rgba(0, 0, 0, 0.08);
     }
+
     .top {
       display: flex;
       justify-content: space-between;
       align-items: center;
+      gap: 10px;
       padding: 14px 16px;
       border-bottom: 1px solid var(--line);
       background: linear-gradient(90deg, #fff, #f7fbff);
-      gap: 10px;
       flex-wrap: wrap;
     }
-    .brand { font-weight: 700; letter-spacing: .2px; }
-    .status { color: var(--muted); font-size: 13px; }
-    .controls {
-      display: grid;
-      grid-template-columns: 1fr auto auto;
+
+    .brand {
+      font-weight: 700;
+      letter-spacing: 0.2px;
+    }
+
+    .status {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .top-actions {
+      display: flex;
       gap: 8px;
-      padding: 12px 16px;
+      align-items: center;
+    }
+
+    .tabs-wrap {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      gap: 6px;
+      padding: 10px 12px;
       border-bottom: 1px solid var(--line);
       background: #fff;
+      align-items: center;
+      min-width: 0;
     }
-    input, button {
+
+    .tabs {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .tab {
       border: 1px solid var(--line);
       border-radius: 10px;
-      padding: 10px 12px;
+      padding: 8px 0;
+      background: var(--tab);
+      color: var(--ink);
       font: inherit;
-    }
-    button {
+      font-weight: 600;
       cursor: pointer;
-      background: var(--accent);
-      color: #fff;
-      border-color: var(--accent);
-      transition: background .15s ease;
+      transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
     }
-    button:hover { background: var(--accent-2); }
+
+    .tab:hover {
+      border-color: #b3c6ea;
+      background: #e9f1ff;
+    }
+
+    .tab.active {
+      background: var(--tab-active);
+      color: #fff;
+      border-color: var(--tab-active);
+    }
+
+    .slot-nav {
+      min-width: 56px;
+      padding: 8px 10px;
+    }
+
     #log {
       overflow: auto;
       padding: 14px;
@@ -81,27 +126,34 @@
       align-content: start;
       background: linear-gradient(180deg, #fffbf3 0%, #f9fdf9 100%);
     }
+
     .bubble {
       max-width: min(78ch, 90%);
       border: 1px solid var(--line);
       border-radius: 12px;
       padding: 10px 12px;
       white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      word-break: break-word;
       line-height: 1.45;
       font-size: 14px;
     }
+
     .user {
       margin-left: auto;
       background: var(--user);
     }
+
     .bot {
       margin-right: auto;
       background: var(--bot);
     }
+
     .err {
       margin-right: auto;
       background: var(--warn);
     }
+
     .composer {
       display: grid;
       grid-template-columns: 1fr auto;
@@ -110,24 +162,207 @@
       border-top: 1px solid var(--line);
       background: #fff;
     }
-    @media (max-width: 720px) {
-      .controls { grid-template-columns: 1fr; }
-      .composer { grid-template-columns: 1fr; }
-      button { width: 100%; }
+
+    input,
+    button {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font: inherit;
     }
+
+    button {
+      cursor: pointer;
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+      transition: background 0.15s ease;
+    }
+
+    button:hover { background: var(--accent-2); }
+
+    .btn-muted {
+      background: #fff;
+      color: var(--ink);
+      border-color: var(--line);
+    }
+
+    .btn-muted:hover {
+      background: #f3f6fb;
+    }
+
+    .auth-overlay {
+      position: fixed;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      background: rgba(15, 23, 42, 0.5);
+      padding: 16px;
+      z-index: 10;
+    }
+
+    .auth-card {
+      width: min(440px, 100%);
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: 0 18px 40px rgba(15, 23, 42, 0.25);
+      padding: 16px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .auth-title {
+      font-size: 18px;
+      font-weight: 700;
+    }
+
+    .auth-desc {
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.4;
+    }
+
+    .auth-row {
+      display: grid;
+      gap: 8px;
+    }
+
+    .auth-divider {
+      border-top: 1px solid var(--line);
+      margin: 4px 0;
+    }
+
+    .auth-note {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    @media (max-width: 900px) {
+      .tabs {
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+      }
+
+      .tabs-wrap {
+        grid-template-columns: auto 1fr auto;
+      }
+    }
+
+    @media (max-width: 720px) {
+      body {
+        padding: 10px;
+        place-items: stretch;
+      }
+
+      .app {
+        width: 100%;
+        height: calc(100dvh - 20px);
+        max-height: none;
+        min-height: 0;
+        overflow: hidden;
+        grid-template-rows: auto auto minmax(0, 1fr) auto;
+      }
+
+      #log {
+        overflow: auto;
+        min-height: 0;
+        overscroll-behavior: contain;
+      }
+
+      .tabs-wrap {
+        padding: 8px;
+        gap: 4px;
+      }
+
+      .tabs {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+      }
+
+      .tab {
+        padding: 8px 0;
+      }
+
+      .slot-nav {
+        min-width: 48px;
+        padding: 8px 6px;
+      }
+
+      .composer {
+        grid-template-columns: 1fr auto;
+      }
+
+      .composer button {
+        width: auto;
+      }
+
+      .top-actions {
+        width: 100%;
+        justify-content: space-between;
+      }
+    }
+
+    @media (max-width: 380px) {
+      body {
+        padding: 6px;
+      }
+
+      .app {
+        height: calc(100dvh - 12px);
+      }
+
+      .tabs {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+      }
+
+      .slot-nav {
+        min-width: 44px;
+        font-size: 12px;
+        padding: 7px 4px;
+      }
+    }
+
   </style>
 </head>
 <body>
-  <main class="app">
+  <section id="authOverlay" class="auth-overlay hidden">
+    <div class="auth-card">
+      <div class="auth-title">Sign in required</div>
+      <div class="auth-desc">Sign in with an approved Google account to access this web console.</div>
+
+      <div id="googleRow" class="auth-row hidden">
+        <div id="googleButton"></div>
+      </div>
+
+      <div id="googleDisabled" class="auth-note hidden">Google login is not configured on server.</div>
+
+      <div class="auth-divider"></div>
+
+      <form id="devLoginForm" class="auth-row">
+        <input id="devPassword" type="password" autocomplete="off" placeholder="Admin password" />
+        <button type="submit">Developer Login</button>
+      </form>
+
+      <div id="authError" class="auth-note"></div>
+    </div>
+  </section>
+
+  <main id="app" class="app hidden">
     <section class="top">
       <div class="brand">jclaw web chat</div>
-      <div id="status" class="status">connecting...</div>
+      <div class="top-actions">
+        <div id="status" class="status">connecting...</div>
+        <button id="logoutBtn" type="button" class="btn-muted">Logout</button>
+      </div>
     </section>
 
-    <section class="controls">
-      <input id="chatId" placeholder="chat id" />
-      <button id="refreshBtn" type="button">Refresh</button>
-      <button id="useA" type="button">Use Slot A</button>
+    <section class="tabs-wrap">
+      <button id="slotPrev" type="button" class="btn-muted slot-nav">Prev</button>
+      <section id="sessionTabs" class="tabs"></section>
+      <button id="slotNext" type="button" class="btn-muted slot-nav">Next</button>
     </section>
 
     <section id="log"></section>
@@ -138,109 +373,353 @@
     </form>
   </main>
 
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
   <script>
+    const appEl = document.getElementById('app');
+    const authOverlayEl = document.getElementById('authOverlay');
+    const authErrorEl = document.getElementById('authError');
+    const googleRowEl = document.getElementById('googleRow');
+    const googleDisabledEl = document.getElementById('googleDisabled');
+    const googleButtonEl = document.getElementById('googleButton');
+    const devLoginFormEl = document.getElementById('devLoginForm');
+    const devPasswordEl = document.getElementById('devPassword');
+
     const statusEl = document.getElementById('status');
-    const chatIdEl = document.getElementById('chatId');
+    const logoutBtnEl = document.getElementById('logoutBtn');
+    const sessionTabsEl = document.getElementById('sessionTabs');
+    const slotPrevEl = document.getElementById('slotPrev');
+    const slotNextEl = document.getElementById('slotNext');
     const logEl = document.getElementById('log');
     const messageEl = document.getElementById('message');
     const composerEl = document.getElementById('composer');
-    const refreshBtn = document.getElementById('refreshBtn');
-    const useABtn = document.getElementById('useA');
 
-    const KEY_CHAT_ID = 'jclaw_web_chat_id';
+    const SLOT_TABS = Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i));
+    const SLOT_PAGE_SIZE = 8;
+    const SLOT_PAGE_STARTS = [0, 8, 16, 24];
+    const HISTORY_LIMIT = 120;
+    let slotPageStart = 0;
+    let currentSlot = '';
 
-    function appendBubble(text, type = 'bot') {
-      const div = document.createElement('div');
-      div.className = `bubble ${type}`;
-      div.textContent = text;
-      logEl.appendChild(div);
+    const sessionLogs = new Map();
+    const hydratedSlots = new Set();
+    const hydratingSlots = new Map();
+
+    function sessionKey(slot) {
+      return slot || '_default';
+    }
+
+    function getSessionLog(slot) {
+      const key = sessionKey(slot);
+      if (!sessionLogs.has(key)) {
+        sessionLogs.set(key, []);
+      }
+      return sessionLogs.get(key);
+    }
+
+    function renderCurrentLog() {
+      const rows = getSessionLog(currentSlot);
+      logEl.innerHTML = '';
+      for (const row of rows) {
+        const div = document.createElement('div');
+        div.className = `bubble ${row.type}`;
+        div.textContent = row.text;
+        logEl.appendChild(div);
+      }
       logEl.scrollTop = logEl.scrollHeight;
-      return div;
+    }
+
+    function appendBubble(text, type = 'bot', slot = currentSlot) {
+      const row = { text, type, slot };
+      getSessionLog(slot).push(row);
+      if (slot === currentSlot) {
+        renderCurrentLog();
+      }
+      return row;
+    }
+
+    function updateBubble(row, patch) {
+      Object.assign(row, patch);
+      if (row.slot === currentSlot) {
+        renderCurrentLog();
+      }
     }
 
     function setStatus(s) {
       statusEl.textContent = s;
     }
 
-    async function fetchState() {
-      const chatId = (chatIdEl.value || '').trim();
-      const q = chatId ? `?chatId=${encodeURIComponent(chatId)}` : '';
-      const res = await fetch(`/api/state${q}`);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'state failed');
-      chatIdEl.value = data.chatId;
-      localStorage.setItem(KEY_CHAT_ID, data.chatId);
-      setStatus(`slot=${data.sessionSlot} | session=${data.sessionName} | log=${data.logEnabled ? 'ON' : 'OFF'}`);
+    function formatHistoryRows(rows, slot) {
+      const out = [];
+      for (const row of rows) {
+        out.push({ text: row.input, type: 'user', slot });
+        const merged = [row.output?.trim() || '', row.error ? `ERR:
+${row.error}` : '']
+          .filter(Boolean)
+          .join('\n\n') || '(no output)';
+        out.push({ text: merged, type: row.error ? 'err' : 'bot', slot });
+      }
+      return out;
+    }
+
+    async function ensureSessionHydrated(slot) {
+      if (!slot || hydratedSlots.has(slot)) {
+        return;
+      }
+      if (hydratingSlots.has(slot)) {
+        await hydratingSlots.get(slot);
+        return;
+      }
+
+      const task = (async () => {
+        try {
+          const data = await api(`/api/session-history?slot=${encodeURIComponent(slot)}&limit=${HISTORY_LIMIT}`, {
+            method: 'GET',
+            headers: {}
+          });
+          const rows = Array.isArray(data.items) ? data.items : [];
+          sessionLogs.set(sessionKey(slot), formatHistoryRows(rows, slot));
+          hydratedSlots.add(slot);
+          if (slot === currentSlot) {
+            renderCurrentLog();
+          }
+        } finally {
+          hydratingSlots.delete(slot);
+        }
+      })();
+
+      hydratingSlots.set(slot, task);
+      await task;
+    }
+
+    function showAuth(message = '') {
+      authErrorEl.textContent = message;
+      authOverlayEl.classList.remove('hidden');
+      appEl.classList.add('hidden');
+    }
+
+    function showApp() {
+      authOverlayEl.classList.add('hidden');
+      appEl.classList.remove('hidden');
+      messageEl.focus();
+    }
+
+    async function api(path, options = {}) {
+      const res = await fetch(path, {
+        ...options,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(options.headers || {})
+        }
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || 'request failed');
+      }
       return data;
     }
 
-    async function sendMessage(text) {
-      const chatId = (chatIdEl.value || '').trim();
-      const res = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chatId, message: text })
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'send failed');
-      setStatus(`slot=${data.sessionSlot} | session=${data.sessionName} | log=${data.logEnabled ? 'ON' : 'OFF'}`);
+    function renderSessionTabs(alignToCurrent = false) {
+      const currentIndex = SLOT_TABS.indexOf(currentSlot);
+      if (alignToCurrent && currentIndex >= 0) {
+        slotPageStart = SLOT_PAGE_STARTS.find((start, i) => {
+          const end = SLOT_PAGE_STARTS[i + 1] ?? SLOT_TABS.length;
+          return currentIndex >= start && currentIndex < end;
+        }) ?? 0;
+      }
+
+      const pageIndex = SLOT_PAGE_STARTS.indexOf(slotPageStart);
+      const nextStart = SLOT_PAGE_STARTS[pageIndex + 1] ?? SLOT_TABS.length;
+      const visibleSlots = SLOT_TABS.slice(slotPageStart, nextStart);
+      sessionTabsEl.innerHTML = '';
+
+      for (const slot of visibleSlots) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = `tab${slot === currentSlot ? ' active' : ''}`;
+        btn.textContent = slot;
+        btn.disabled = slot === currentSlot;
+        btn.addEventListener('click', () => {
+          void switchSession(slot);
+        });
+        sessionTabsEl.appendChild(btn);
+      }
+
+      slotPrevEl.disabled = pageIndex <= 0;
+      slotNextEl.disabled = pageIndex < 0 || pageIndex >= SLOT_PAGE_STARTS.length - 1;
+    }
+
+    function applyState(data, options = { adoptCurrent: true }) {
+      if (options.adoptCurrent) {
+        currentSlot = data.sessionSlot;
+      }
+      const authText = data.auth ? ` | auth=${data.auth.method}:${data.auth.email}` : '';
+      const statusSlot = currentSlot || data.sessionSlot;
+      setStatus(`slot=${statusSlot} | session=${data.sessionName} | log=${data.logEnabled ? 'ON' : 'OFF'}${authText}`);
+      renderSessionTabs(options.adoptCurrent);
+      renderCurrentLog();
+      void ensureSessionHydrated(statusSlot);
+    }
+
+    async function fetchState() {
+      const data = await api('/api/state', { method: 'GET', headers: {} });
+      applyState(data);
       return data;
     }
+
+    async function sendMessage(text, options = { adoptCurrent: true }) {
+      const data = await api('/api/chat', {
+        method: 'POST',
+        body: JSON.stringify({ message: text })
+      });
+      applyState(data, options);
+      return data;
+    }
+
+    async function switchSession(slot) {
+      try {
+        await sendMessage(`/session ${slot}`, { adoptCurrent: true });
+      } catch (err) {
+        appendBubble(String(err), 'err', currentSlot);
+      }
+    }
+
+    async function handleGoogleCredential(response) {
+      try {
+        await api('/api/auth/google', {
+          method: 'POST',
+          body: JSON.stringify({ idToken: response.credential })
+        });
+        await bootstrapApp();
+      } catch (err) {
+        showAuth(String(err));
+      }
+    }
+
+    function setupGoogleLogin(authStatus) {
+      if (!authStatus.googleEnabled || !authStatus.googleClientId) {
+        googleRowEl.classList.add('hidden');
+        googleDisabledEl.classList.remove('hidden');
+        return;
+      }
+
+      if (!window.google?.accounts?.id) {
+        showAuth('Google SDK failed to load. Refresh and try again.');
+        return;
+      }
+
+      googleRowEl.classList.remove('hidden');
+      googleDisabledEl.classList.add('hidden');
+      googleButtonEl.innerHTML = '';
+
+      window.google.accounts.id.initialize({
+        client_id: authStatus.googleClientId,
+        callback: handleGoogleCredential,
+        auto_select: false,
+        cancel_on_tap_outside: true
+      });
+
+      window.google.accounts.id.renderButton(googleButtonEl, {
+        theme: 'outline',
+        size: 'large',
+        shape: 'pill',
+        text: 'continue_with'
+      });
+    }
+
+    devLoginFormEl.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const password = devPasswordEl.value;
+      if (!password) {
+        showAuth('Enter admin password.');
+        return;
+      }
+
+      try {
+        await api('/api/auth/dev', {
+          method: 'POST',
+          body: JSON.stringify({ password })
+        });
+        devPasswordEl.value = '';
+        await bootstrapApp();
+      } catch (err) {
+        showAuth(String(err));
+      }
+    });
+
+    slotPrevEl.addEventListener('click', () => {
+      const pageIndex = SLOT_PAGE_STARTS.indexOf(slotPageStart);
+      if (pageIndex > 0) {
+        slotPageStart = SLOT_PAGE_STARTS[pageIndex - 1];
+      }
+      renderSessionTabs();
+    });
+
+    slotNextEl.addEventListener('click', () => {
+      const pageIndex = SLOT_PAGE_STARTS.indexOf(slotPageStart);
+      if (pageIndex >= 0 && pageIndex < SLOT_PAGE_STARTS.length - 1) {
+        slotPageStart = SLOT_PAGE_STARTS[pageIndex + 1];
+      }
+      renderSessionTabs();
+    });
+
+    logoutBtnEl.addEventListener('click', async () => {
+      try {
+        await api('/api/auth/logout', { method: 'POST', body: '{}' });
+      } catch {
+      }
+      showAuth('Logged out.');
+      await ensureAuth();
+    });
 
     composerEl.addEventListener('submit', async (e) => {
       e.preventDefault();
       const text = messageEl.value.trim();
       if (!text) return;
-      appendBubble(text, 'user');
+
+      const slotAtSend = currentSlot;
+      appendBubble(text, 'user', slotAtSend);
       messageEl.value = '';
-      const pending = appendBubble('processing...', 'bot');
+      const pending = appendBubble('processing...', 'bot', slotAtSend);
       let dots = 0;
       const ticker = setInterval(() => {
         dots = (dots + 1) % 4;
-        pending.textContent = `processing${'.'.repeat(dots)}`;
+        updateBubble(pending, { text: `processing${'.'.repeat(dots)}` });
       }, 1200);
 
       try {
-        const data = await sendMessage(text);
-        pending.textContent = data.reply;
+        const data = await sendMessage(text, { adoptCurrent: currentSlot === slotAtSend });
+        updateBubble(pending, { text: data.reply, type: 'bot' });
       } catch (err) {
-        pending.className = 'bubble err';
-        pending.textContent = String(err);
+        updateBubble(pending, { text: String(err), type: 'err' });
       } finally {
         clearInterval(ticker);
       }
     });
 
-    refreshBtn.addEventListener('click', async () => {
+    async function bootstrapApp() {
       try {
         await fetchState();
+        showApp();
       } catch (err) {
-        appendBubble(String(err), 'err');
+        showAuth(String(err));
       }
-    });
+    }
 
-    useABtn.addEventListener('click', async () => {
+    async function ensureAuth() {
       try {
-        appendBubble('/session A', 'user');
-        const data = await sendMessage('/session A');
-        appendBubble(data.reply, 'bot');
+        const status = await api('/api/auth/status', { method: 'GET', headers: {} });
+        if (status.authenticated) {
+          await bootstrapApp();
+          return;
+        }
+        setupGoogleLogin(status);
+        showAuth('');
       } catch (err) {
-        appendBubble(String(err), 'err');
+        showAuth(String(err));
       }
-    });
+    }
 
-    (async () => {
-      const saved = localStorage.getItem(KEY_CHAT_ID);
-      if (saved) chatIdEl.value = saved;
-      try {
-        const state = await fetchState();
-        appendBubble('Connected. Try /help or ask directly.', 'bot');
-        appendBubble(`Current slot ${state.sessionSlot}`, 'bot');
-      } catch (err) {
-        appendBubble(String(err), 'err');
-      }
-      messageEl.focus();
-    })();
+    void ensureAuth();
   </script>
 </body>
 </html>

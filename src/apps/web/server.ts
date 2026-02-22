@@ -2,6 +2,7 @@ import dotenv from "dotenv";
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { randomBytes } from "node:crypto";
 import { loadConfig } from "../../core/config/env";
 import { SessionStore, Session } from "../../core/session/sessionStore";
 import { runCodex } from "../../core/codex/runner";
@@ -33,6 +34,164 @@ type ChatRequest = {
   chatId?: string;
   message?: string;
 };
+
+type AuthRequest = {
+  idToken?: string;
+  password?: string;
+};
+
+type WebAuthSession = {
+  token: string;
+  email: string;
+  method: "google" | "dev";
+  expiresAt: number;
+};
+
+const WEB_CHAT_ID = process.env.WEB_CHAT_ID?.trim() || defaultChatId();
+const WEB_AUTH_COOKIE = "jclaw_web_auth";
+const WEB_SESSION_TTL_MS = 1000 * 60 * 60 * 12;
+const WEB_DEV_PASSWORD = process.env.WEB_DEV_PASSWORD ?? "3437";
+const WEB_GOOGLE_CLIENT_ID = (process.env.WEB_GOOGLE_CLIENT_ID ?? "").trim();
+const WEB_ALLOWED_EMAILS = new Set(
+  (process.env.WEB_ALLOWED_EMAILS ?? "")
+    .split(",")
+    .map((v) => v.trim().toLowerCase())
+    .filter(Boolean)
+);
+const webAuthSessions = new Map<string, WebAuthSession>();
+
+function pruneExpiredWebAuthSessions(): void {
+  const now = Date.now();
+  for (const [token, session] of webAuthSessions.entries()) {
+    if (session.expiresAt <= now) {
+      webAuthSessions.delete(token);
+    }
+  }
+}
+
+function parseCookies(req: IncomingMessage): Map<string, string> {
+  const raw = req.headers.cookie ?? "";
+  const out = new Map<string, string>();
+
+  for (const pair of raw.split(";")) {
+    const trimmed = pair.trim();
+    if (!trimmed) continue;
+    const idx = trimmed.indexOf("=");
+    if (idx <= 0) continue;
+    const key = decodeURIComponent(trimmed.slice(0, idx).trim());
+    const value = decodeURIComponent(trimmed.slice(idx + 1).trim());
+    out.set(key, value);
+  }
+
+  return out;
+}
+
+function setAuthCookie(res: ServerResponse, token: string): void {
+  const isSecure = process.env.NODE_ENV === "production";
+  const maxAgeSeconds = Math.floor(WEB_SESSION_TTL_MS / 1000);
+  const parts = [
+    `${WEB_AUTH_COOKIE}=${encodeURIComponent(token)}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    `Max-Age=${maxAgeSeconds}`
+  ];
+  if (isSecure) {
+    parts.push("Secure");
+  }
+  res.setHeader("Set-Cookie", parts.join("; "));
+}
+
+function clearAuthCookie(res: ServerResponse): void {
+  const isSecure = process.env.NODE_ENV === "production";
+  const parts = [
+    `${WEB_AUTH_COOKIE}=`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    "Max-Age=0"
+  ];
+  if (isSecure) {
+    parts.push("Secure");
+  }
+  res.setHeader("Set-Cookie", parts.join("; "));
+}
+
+function getAuthSession(req: IncomingMessage): WebAuthSession | null {
+  pruneExpiredWebAuthSessions();
+  const token = parseCookies(req).get(WEB_AUTH_COOKIE);
+  if (!token) {
+    return null;
+  }
+  const session = webAuthSessions.get(token);
+  if (!session) {
+    return null;
+  }
+  if (session.expiresAt <= Date.now()) {
+    webAuthSessions.delete(token);
+    return null;
+  }
+  return session;
+}
+
+function requireAuth(req: IncomingMessage, res: ServerResponse): WebAuthSession | null {
+  const session = getAuthSession(req);
+  if (!session) {
+    json(res, 401, { error: "Unauthorized" });
+    return null;
+  }
+  return session;
+}
+
+function createAuthSession(email: string, method: "google" | "dev"): WebAuthSession {
+  const token = randomBytes(24).toString("hex");
+  const session: WebAuthSession = {
+    token,
+    email,
+    method,
+    expiresAt: Date.now() + WEB_SESSION_TTL_MS
+  };
+  webAuthSessions.set(token, session);
+  return session;
+}
+
+function isAllowedEmail(email: string): boolean {
+  if (WEB_ALLOWED_EMAILS.size === 0) {
+    return true;
+  }
+  return WEB_ALLOWED_EMAILS.has(email.toLowerCase());
+}
+
+async function verifyGoogleIdToken(idToken: string): Promise<string | null> {
+  const url = new URL("https://oauth2.googleapis.com/tokeninfo");
+  url.searchParams.set("id_token", idToken);
+
+  const res = await fetch(url);
+  if (!res.ok) {
+    return null;
+  }
+
+  const data = (await res.json()) as {
+    aud?: string;
+    email?: string;
+    email_verified?: string;
+  };
+
+  const email = (data.email ?? "").trim().toLowerCase();
+  const verified = String(data.email_verified ?? "false").toLowerCase() === "true";
+  if (!email || !verified) {
+    return null;
+  }
+  if (WEB_GOOGLE_CLIENT_ID && data.aud !== WEB_GOOGLE_CLIENT_ID) {
+    return null;
+  }
+  if (!isAllowedEmail(email)) {
+    return null;
+  }
+
+  return email;
+}
+
 
 function json(res: ServerResponse, status: number, payload: unknown): void {
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
@@ -588,6 +747,11 @@ async function handleCommand(chatId: string, session: Session, cmdLine: string):
 }
 
 async function handleApiChat(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = requireAuth(req, res);
+  if (!auth) {
+    return;
+  }
+
   let payload: ChatRequest;
   try {
     payload = JSON.parse(await readBody(req)) as ChatRequest;
@@ -596,13 +760,14 @@ async function handleApiChat(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
 
-  const chatId = (payload.chatId ?? defaultChatId()).trim();
   const message = (payload.message ?? "").trim();
 
   if (!message) {
     json(res, 400, { error: "message is required" });
     return;
   }
+
+  const chatId = WEB_CHAT_ID;
 
   if (!ensureAllowed(chatId)) {
     json(res, 403, { error: "Access denied" });
@@ -631,8 +796,12 @@ async function handleApiChat(req: IncomingMessage, res: ServerResponse): Promise
 }
 
 async function handleApiState(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
-  const chatId = (url.searchParams.get("chatId") ?? defaultChatId()).trim();
+  const auth = requireAuth(req, res);
+  if (!auth) {
+    return;
+  }
+
+  const chatId = WEB_CHAT_ID;
 
   if (!ensureAllowed(chatId)) {
     json(res, 403, { error: "Access denied" });
@@ -645,7 +814,130 @@ async function handleApiState(req: IncomingMessage, res: ServerResponse): Promis
       chatId,
       sessionSlot: session.shortId,
       sessionName: session.id,
-      logEnabled
+      logEnabled,
+      auth: {
+        email: auth.email,
+        method: auth.method
+      }
+    });
+  } catch (err) {
+    json(res, 500, { error: String(err) });
+  }
+}
+
+async function handleApiAuthStatus(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const session = getAuthSession(req);
+  json(res, 200, {
+    authenticated: Boolean(session),
+    email: session?.email ?? null,
+    method: session?.method ?? null,
+    googleClientId: WEB_GOOGLE_CLIENT_ID || null,
+    googleEnabled: Boolean(WEB_GOOGLE_CLIENT_ID),
+    devPasswordEnabled: true,
+    allowedEmailsConfigured: WEB_ALLOWED_EMAILS.size > 0
+  });
+}
+
+async function handleApiAuthGoogle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  let payload: AuthRequest;
+  try {
+    payload = JSON.parse(await readBody(req)) as AuthRequest;
+  } catch (err) {
+    json(res, 400, { error: String(err) });
+    return;
+  }
+
+  const idToken = (payload.idToken ?? "").trim();
+  if (!idToken) {
+    json(res, 400, { error: "idToken is required" });
+    return;
+  }
+
+  try {
+    const email = await verifyGoogleIdToken(idToken);
+    if (!email) {
+      json(res, 401, { error: "Google authentication failed" });
+      return;
+    }
+
+    const session = createAuthSession(email, "google");
+    setAuthCookie(res, session.token);
+    json(res, 200, { ok: true, email: session.email, method: session.method });
+  } catch (err) {
+    json(res, 500, { error: String(err) });
+  }
+}
+
+async function handleApiAuthDev(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  let payload: AuthRequest;
+  try {
+    payload = JSON.parse(await readBody(req)) as AuthRequest;
+  } catch (err) {
+    json(res, 400, { error: String(err) });
+    return;
+  }
+
+  const password = payload.password ?? "";
+  if (!password) {
+    json(res, 400, { error: "password is required" });
+    return;
+  }
+
+  if (password !== WEB_DEV_PASSWORD) {
+    json(res, 401, { error: "Invalid development password" });
+    return;
+  }
+
+  const session = createAuthSession("dev-login@local", "dev");
+  setAuthCookie(res, session.token);
+  json(res, 200, { ok: true, email: session.email, method: session.method });
+}
+
+async function handleApiAuthLogout(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const token = parseCookies(req).get(WEB_AUTH_COOKIE);
+  if (token) {
+    webAuthSessions.delete(token);
+  }
+  clearAuthCookie(res);
+  json(res, 200, { ok: true });
+}
+
+async function handleApiSessionHistory(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = requireAuth(req, res);
+  if (!auth) {
+    return;
+  }
+
+  const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
+  const slot = (url.searchParams.get("slot") ?? "").trim().toUpperCase();
+  const limitRaw = Number(url.searchParams.get("limit") ?? "60");
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(300, Math.floor(limitRaw))) : 60;
+
+  const chatId = WEB_CHAT_ID;
+  if (!ensureAllowed(chatId)) {
+    json(res, 403, { error: "Access denied" });
+    return;
+  }
+
+  try {
+    let session: Session | null = null;
+    if (slot) {
+      const resolved = store.resolveSessionId(slot, chatId);
+      session = resolved ? store.getSession(resolved) : null;
+    } else {
+      session = getState(chatId).session;
+    }
+
+    if (!session) {
+      json(res, 200, { slot, sessionName: null, items: [] });
+      return;
+    }
+
+    const rows = store.listHistory(session.id, limit);
+    json(res, 200, {
+      slot: session.shortId,
+      sessionName: session.id,
+      items: rows
     });
   } catch (err) {
     json(res, 500, { error: String(err) });
@@ -695,8 +987,33 @@ export async function startWebServer(): Promise<void> {
 
     const pathname = new URL(req.url, `http://${req.headers.host}`).pathname;
 
+    if (req.method === "GET" && pathname === "/api/auth/status") {
+      await handleApiAuthStatus(req, res);
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/auth/google") {
+      await handleApiAuthGoogle(req, res);
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/auth/dev") {
+      await handleApiAuthDev(req, res);
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/auth/logout") {
+      await handleApiAuthLogout(req, res);
+      return;
+    }
+
     if (req.method === "GET" && pathname === "/api/state") {
       await handleApiState(req, res);
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/api/session-history") {
+      await handleApiSessionHistory(req, res);
       return;
     }
 
