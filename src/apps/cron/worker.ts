@@ -3,6 +3,7 @@ import path from "node:path";
 import { loadConfig } from "../../core/config/env";
 import { SessionStore } from "../../core/session/sessionStore";
 import { runCodex } from "../../core/codex/runner";
+import { applyPlanModePrompt } from "../../core/codex/promptMode";
 import { resolveCodexCommand } from "../../core/commands/resolver";
 import { InteractionLogger } from "../../core/logging/interactionLogger";
 import { CronJob, CronStore } from "../../core/cron/store";
@@ -93,10 +94,13 @@ async function executeJob(jobId: string): Promise<void> {
       return;
     }
 
+    const planMode = sessionStore.getPlanMode(session.id);
+    const effectivePrompt = applyPlanModePrompt(job.prompt, planMode);
+
     const result = await runCodex({
       codexCommand: codexCommandResolved,
       codexArgsTemplate: config.codexArgsTemplate,
-      prompt: job.prompt,
+      prompt: effectivePrompt,
       sessionId: session.id,
       codexSessionId: session.codexSessionId,
       timeoutMs: config.codexTimeoutMs,
@@ -193,3 +197,4 @@ export async function startCronWorker(): Promise<void> {
 if (require.main === module) {
   void startCronWorker();
 }
+

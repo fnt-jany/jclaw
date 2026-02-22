@@ -99,9 +99,30 @@ export class SessionStore {
     return session;
   }
 
+
+  recreateSessionAtSlot(chatId: string, slot: SlotId, channel: ActiveSessionChannel = DEFAULT_ACTIVE_CHANNEL): Session {
+    this.removeSessionByChatAndSlot(chatId, slot);
+
+    const session = this.createSession(chatId, slot);
+    this.db
+      .prepare(
+        `INSERT INTO sessions (id, short_id, chat_id, codex_session_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      )
+      .run(session.id, session.shortId, session.chatId, session.codexSessionId, session.createdAt, session.updatedAt);
+
+    this.upsertActiveSession(chatId, channel, session.id);
+
+    return session;
+  }
+
   setActiveSession(chatId: string, sessionIdOrPrefix: string, channel: ActiveSessionChannel = DEFAULT_ACTIVE_CHANNEL): Session {
     const resolvedId = this.resolveSessionId(sessionIdOrPrefix, chatId);
     if (!resolvedId) {
+      const slot = sessionIdOrPrefix.trim().toUpperCase() as SlotId;
+      if (SLOT_IDS.includes(slot)) {
+        return this.recreateSessionAtSlot(chatId, slot, channel);
+      }
       throw new Error(`Session not found: ${sessionIdOrPrefix}`);
     }
 
@@ -146,7 +167,8 @@ export class SessionStore {
       ? (this.db.prepare("SELECT id, short_id FROM sessions WHERE chat_id = ?").all(chatId) as Array<{ id: string; short_id: string }>)
       : (this.db.prepare("SELECT id, short_id FROM sessions").all() as Array<{ id: string; short_id: string }>);
 
-    const slotMatches = candidates.filter((s) => s.short_id === target.toUpperCase());
+    const normalizedSlot = target.toUpperCase();
+    const slotMatches = candidates.filter((s) => s.short_id.toUpperCase() === normalizedSlot);
     if (slotMatches.length === 1) {
       return slotMatches[0].id;
     }
@@ -279,6 +301,23 @@ export class SessionStore {
     }));
   }
 
+  getPlanMode(sessionId: string): boolean {
+    const row = this.db
+      .prepare("SELECT plan_mode FROM session_preferences WHERE session_id = ?")
+      .get(sessionId) as { plan_mode: number } | undefined;
+    return !!row?.plan_mode;
+  }
+
+  setPlanMode(sessionId: string, enabled: boolean): boolean {
+    this.db
+      .prepare(
+        `INSERT INTO session_preferences(session_id, plan_mode) VALUES (?, ?)
+         ON CONFLICT(session_id) DO UPDATE SET plan_mode = excluded.plan_mode`
+      )
+      .run(sessionId, enabled ? 1 : 0);
+    return this.getPlanMode(sessionId);
+  }
+
   appendRun(sessionId: string, run: RunRecord): Session {
     const session = this.getSession(sessionId);
     if (!session) {
@@ -383,6 +422,7 @@ export class SessionStore {
     }
 
     this.db.prepare("DELETE FROM run_history WHERE session_id = ?").run(sessionId);
+    this.db.prepare("DELETE FROM session_preferences WHERE session_id = ?").run(sessionId);
     this.db.prepare("DELETE FROM sessions WHERE id = ?").run(sessionId);
     if (existing.chat_id) {
       this.db

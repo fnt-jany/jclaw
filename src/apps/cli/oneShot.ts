@@ -3,6 +3,7 @@ import path from "node:path";
 import { loadConfig } from "../../core/config/env";
 import { SessionStore } from "../../core/session/sessionStore";
 import { runCodex } from "../../core/codex/runner";
+import { applyPlanModePrompt } from "../../core/codex/promptMode";
 import { resolveCodexCommand } from "../../core/commands/resolver";
 import { InteractionLogger } from "../../core/logging/interactionLogger";
 import { DEFAULT_LOCAL_CHAT_ID, SLOT_TARGET_HINT } from "../../shared/constants";
@@ -81,10 +82,13 @@ export async function startCliOneShot(): Promise<void> {
     session = store.getOrCreateSessionByChat(parsed.chatId, "cli");
   }
 
+  const planMode = store.getPlanMode(session.id);
+  const effectivePrompt = applyPlanModePrompt(parsed.prompt, planMode);
+
   const result = await runCodex({
     codexCommand: resolved.command,
     codexArgsTemplate: config.codexArgsTemplate,
-    prompt: parsed.prompt,
+    prompt: effectivePrompt,
     sessionId: session.id,
     codexSessionId: session.codexSessionId,
     timeoutMs: config.codexTimeoutMs,
@@ -146,4 +150,5 @@ export async function startCliOneShot(): Promise<void> {
 if (require.main === module) {
   void startCliOneShot();
 }
+
 

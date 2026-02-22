@@ -5,6 +5,7 @@ import { stdin as input, stdout as output } from "node:process";
 import { loadConfig } from "../../core/config/env";
 import { SessionStore, Session } from "../../core/session/sessionStore";
 import { runCodex } from "../../core/codex/runner";
+import { applyPlanModePrompt } from "../../core/codex/promptMode";
 import { resolveCodexCommand } from "../../core/commands/resolver";
 import { InteractionLogger } from "../../core/logging/interactionLogger";
 import { DEFAULT_LOCAL_CHAT_ID, LOG_COMMAND, SLOT_TARGET_HINT, TEXT } from "../../shared/constants";
@@ -50,6 +51,7 @@ function printHelp(): void {
       "/new                 Create/switch to next slot (A->Z cycle)",
       `/session <${SLOT_TARGET_HINT}>    Switch session`,
       `${LOG_COMMAND} Toggle interaction logging`,
+      "/plan <on|off|status> Toggle plan mode",
       "/slot <list|show|bind> Manage slot-codex mapping",
       "/exit                Quit chat mode"
     ].join("\n") + "\n"
@@ -71,10 +73,13 @@ async function runPrompt(
   interactionLogger: InteractionLogger,
   codexCommand: string
 ): Promise<void> {
+  const planMode = store.getPlanMode(session.id);
+  const effectivePrompt = applyPlanModePrompt(prompt, planMode);
+
   const result = await runCodex({
     codexCommand,
     codexArgsTemplate: config.codexArgsTemplate,
-    prompt,
+    prompt: effectivePrompt,
     sessionId: session.id,
     codexSessionId: session.codexSessionId,
     timeoutMs: config.codexTimeoutMs,
@@ -223,6 +228,26 @@ export async function startCliChat(): Promise<void> {
         continue;
       }
 
+      if (line.startsWith("/plan")) {
+        const arg = line.split(" ").filter(Boolean)[1]?.toLowerCase() ?? "status";
+        if (arg === "status") {
+          output.write(`Plan mode: ${store.getPlanMode(session.id) ? "ON" : "OFF"}\n`);
+          continue;
+        }
+        if (arg === "on") {
+          store.setPlanMode(session.id, true);
+          output.write("Plan mode: ON\n");
+          continue;
+        }
+        if (arg === "off") {
+          store.setPlanMode(session.id, false);
+          output.write("Plan mode: OFF\n");
+          continue;
+        }
+        output.write("Usage: /plan <on|off|status>\n");
+        continue;
+      }
+
       if (line.startsWith("/slot")) {
         const parts = line.split(" ").filter(Boolean);
         const sub = (parts[1] ?? "list").toLowerCase();
@@ -291,5 +316,7 @@ export async function startCliChat(): Promise<void> {
 if (require.main === module) {
   void startCliChat();
 }
+
+
 
 

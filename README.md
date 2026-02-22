@@ -71,6 +71,7 @@ npm run admin:slots -- import --file data/manual-slot-bindings.json
 - `/where`
 - `/whoami`
 - `/log <on|off|status>`
+- `/plan <on|off|status>`
 - `/cron ...`
 - `/slot ...`
 - `/admin <status|restart>`
@@ -111,3 +112,4 @@ npm run pm2:telegram:restart
 npm run pm2:telegram:stop
 npm run pm2:telegram:logs
 ```
+

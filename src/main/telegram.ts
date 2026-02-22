@@ -4,6 +4,7 @@ import { startTelegramBot } from "../apps/telegram/bot";
 import { loadConfig } from "../core/config/env";
 import { appendTelegramCrashLogSync } from "../core/logging/telegramCrashLog";
 import { acquireProcessLock } from "../core/runtime/processLock";
+import { BUILD_TIME_ISO } from "../generated/buildInfo";
 
 dotenv.config({ quiet: true });
 
@@ -32,6 +33,58 @@ function recordCrash(source: string, err: unknown): void {
     appendTelegramCrashLogSync(crashLogPath, source, err);
   } catch (logErr) {
     console.error("[jclaw] failed to persist telegram crash log:", logErr);
+  }
+}
+
+
+function formatKst(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return iso;
+  }
+
+  return new Intl.DateTimeFormat("ko-KR", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  }).format(date);
+}
+
+async function notifyProcessBooted(): Promise<void> {
+  if (!config.telegramBotToken || config.allowedChatIds.size === 0) {
+    return;
+  }
+
+  const startedAt = new Date().toISOString();
+  const targets = Array.from(config.allowedChatIds);
+  console.log(`[jclaw] startup process notify targets: ${targets.join(",")}`);
+  const text = [
+    "[jclaw] Telegram process booted",
+    `build: ${BUILD_TIME_ISO} (KST ${formatKst(BUILD_TIME_ISO)})`,
+    `boot: ${startedAt} (KST ${formatKst(startedAt)})`
+  ].join("\n");
+
+  for (const chatId of targets) {
+    try {
+      const response = await fetch(`https://api.telegram.org/bot${config.telegramBotToken}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId, text })
+      });
+      if (!response.ok) {
+        const body = await response.text();
+        console.error(`[jclaw] startup notify failed for ${chatId}: ${response.status} ${body}`);
+      } else {
+        console.log(`[jclaw] startup process notification sent to ${chatId}`);
+      }
+    } catch (err) {
+      console.error(`[jclaw] startup notify failed for ${chatId}:`, err);
+    }
   }
 }
 
@@ -68,4 +121,7 @@ async function boot(): Promise<void> {
   }
 }
 
-void boot();
+void (async () => {
+  await notifyProcessBooted();
+  await boot();
+})();

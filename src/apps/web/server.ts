@@ -5,6 +5,7 @@ import path from "node:path";
 import { loadConfig } from "../../core/config/env";
 import { SessionStore, Session } from "../../core/session/sessionStore";
 import { runCodex } from "../../core/codex/runner";
+import { applyPlanModePrompt } from "../../core/codex/promptMode";
 import { resolveCodexCommand } from "../../core/commands/resolver";
 import { InteractionLogger } from "../../core/logging/interactionLogger";
 import { CronStore } from "../../core/cron/store";
@@ -278,6 +279,9 @@ async function runPrompt(chatId: string, session: Session, prompt: string): Prom
 
   sessionLocks.add(session.id);
   try {
+    const planMode = store.getPlanMode(session.id);
+    const effectivePrompt = applyPlanModePrompt(prompt, planMode);
+
     const result = await runCodex({
       codexCommand: codexCommandResolved,
       codexArgsTemplate: config.codexArgsTemplate,
@@ -341,6 +345,7 @@ async function handleCommand(chatId: string, session: Session, cmdLine: string):
         "/where",
         "/whoami",
         LOG_COMMAND,
+        "/plan <on|off|status>",
         "/cron ...",
         "/slot <list|show|bind>"
       ].join("\n"),
@@ -442,6 +447,42 @@ async function handleCommand(chatId: string, session: Session, cmdLine: string):
     }
     return {
       reply: TEXT.logUsage,
+      sessionSlot: session.shortId,
+      sessionName: session.id,
+      logEnabled: interactionLogger.isEnabled()
+    };
+  }
+
+  if (cmd === "/plan") {
+    const mode = (parts[1] ?? "status").toLowerCase();
+    if (mode === "status") {
+      return {
+        reply: `Plan mode: ${store.getPlanMode(session.id) ? "ON" : "OFF"}`,
+        sessionSlot: session.shortId,
+        sessionName: session.id,
+        logEnabled: interactionLogger.isEnabled()
+      };
+    }
+    if (mode === "on") {
+      store.setPlanMode(session.id, true);
+      return {
+        reply: "Plan mode: ON",
+        sessionSlot: session.shortId,
+        sessionName: session.id,
+        logEnabled: interactionLogger.isEnabled()
+      };
+    }
+    if (mode === "off") {
+      store.setPlanMode(session.id, false);
+      return {
+        reply: "Plan mode: OFF",
+        sessionSlot: session.shortId,
+        sessionName: session.id,
+        logEnabled: interactionLogger.isEnabled()
+      };
+    }
+    return {
+      reply: "Usage: /plan <on|off|status>",
       sessionSlot: session.shortId,
       sessionName: session.id,
       logEnabled: interactionLogger.isEnabled()
@@ -680,5 +721,7 @@ export async function startWebServer(): Promise<void> {
 if (require.main === module) {
   void startWebServer();
 }
+
+
 
 

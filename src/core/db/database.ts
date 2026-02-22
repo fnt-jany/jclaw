@@ -114,6 +114,16 @@ function ensureSchema(db: Database.Database): void {
       next_slot INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS chat_preferences (
+      chat_id TEXT PRIMARY KEY,
+      plan_mode INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS session_preferences (
+      session_id TEXT PRIMARY KEY,
+      plan_mode INTEGER NOT NULL DEFAULT 0
+    );
+
     CREATE TABLE IF NOT EXISTS interaction_settings (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       enabled INTEGER NOT NULL,

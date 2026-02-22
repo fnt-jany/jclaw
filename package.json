@@ -5,7 +5,7 @@
   "main": "dist/main/telegram.js",
   "scripts": {
     "test": "npm run build",
-    "build": "tsc -p tsconfig.json",
+    "build": "node scripts/write-build-info.cjs && tsc -p tsconfig.json",
     "start": "node dist/main/telegram.js",
     "dev": "tsx src/main/telegram.ts",
     "cli": "tsx src/main/cli.ts",

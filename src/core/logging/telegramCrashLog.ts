@@ -17,9 +17,17 @@ type TelegramCrashLogStore = {
 };
 
 
-function toKstIso(date: Date): string {
-  const shifted = new Date(date.getTime() + 9 * 60 * 60 * 1000);
-  return shifted.toISOString().replace("Z", "+09:00");
+function toKstTimestamp(date: Date): string {
+  return new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  }).format(date).replace("T", " ");
 }
 
 function ensureFile(filePath: string): void {
@@ -67,7 +75,7 @@ function toErrorText(err: unknown): { message: string; stack: string } {
 export function appendTelegramCrashLogSync(filePath: string, source: string, err: unknown): TelegramCrashLogRecord {
   const store = readStore(filePath);
   const errorText = toErrorText(err);
-  const now = toKstIso(new Date());
+  const now = toKstTimestamp(new Date());
 
   const record: TelegramCrashLogRecord = {
     id: `te_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
@@ -97,7 +105,7 @@ export function markTelegramCrashLogsProcessed(filePath: string, ids: string[], 
 
   const store = readStore(filePath);
   const set = new Set(ids);
-  const processedAt = toKstIso(new Date());
+  const processedAt = toKstTimestamp(new Date());
 
   for (const row of store.records) {
     if (set.has(row.id)) {

@@ -5,6 +5,7 @@ import type { Context } from "telegraf";
 import { loadConfig } from "../../core/config/env";
 import { SessionStore } from "../../core/session/sessionStore";
 import { runCodex } from "../../core/codex/runner";
+import { applyPlanModePrompt } from "../../core/codex/promptMode";
 import { resolveCodexCommand } from "../../core/commands/resolver";
 import { InteractionLogger } from "../../core/logging/interactionLogger";
 import { CronStore } from "../../core/cron/store";
@@ -12,6 +13,7 @@ import { buildOneShotCron } from "../../core/cron/oneshot";
 import { parseArgs } from "../../core/commands/args";
 import { LOG_COMMAND, SLOT_TARGET_HINT, TEXT } from "../../shared/constants";
 import { sessionSummary } from "../../shared/types";
+import { BUILD_TIME_ISO } from "../../generated/buildInfo";
 
 dotenv.config({ quiet: true });
 
@@ -23,6 +25,7 @@ const store = new SessionStore(config.dbFile);
 const interactionLogger = new InteractionLogger(interactionLogPath);
 const cronStore = new CronStore(config.dbFile);
 const sessionLocks = new Set<string>();
+let startupNotificationSent = false;
 
 function isAllowed(chatId: string): boolean {
   return config.allowedChatIds.size === 0 || config.allowedChatIds.has(chatId);
@@ -53,6 +56,59 @@ function formatResult(output: string, error: string | null, maxChars: number): s
 
 function chatIdOf(ctx: Context): string | null {
   return ctx.chat?.id?.toString() ?? null;
+}
+
+function formatKst(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return iso;
+  }
+
+  return new Intl.DateTimeFormat("ko-KR", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  }).format(date);
+}
+
+async function notifyBotStarted(bot: Telegraf): Promise<void> {
+  if (startupNotificationSent) {
+    return;
+  }
+
+  const targets = config.allowedChatIds.size > 0
+    ? Array.from(config.allowedChatIds)
+    : [];
+
+  if (!targets.length) {
+    console.log("[jclaw] startup notify skipped: ALLOWED_CHAT_IDS is empty");
+    return;
+  }
+
+  const startedAt = new Date().toISOString();
+  const message = [
+    "[jclaw] Telegram bot started",
+    `build: ${BUILD_TIME_ISO} (KST ${formatKst(BUILD_TIME_ISO)})`,
+    `started: ${startedAt} (KST ${formatKst(startedAt)})`
+  ].join("\n");
+
+  console.log(`[jclaw] startup notify targets: ${targets.join(",")}`);
+
+  for (const chatId of targets) {
+    try {
+      const sent = await bot.telegram.sendMessage(chatId, message);
+      console.log(`[jclaw] startup notification sent to ${chatId} (message_id=${sent.message_id})`);
+    } catch (err) {
+      console.error(`[jclaw] failed to send startup notification to ${chatId}:`, err);
+    }
+  }
+
+  startupNotificationSent = true;
 }
 
 async function handleCronCommand(chatId: string, text: string): Promise<string> {
@@ -185,55 +241,41 @@ function attachHandlers(bot: Telegraf, resolvedCodexCommand: string): void {
     sessionLocks.add(session.id);
     await ctx.reply(`Running in session ${session.shortId}...`);
 
-    await ctx.reply("processing...");
-    let progressQueue: Promise<void> = Promise.resolve();
-    let chunkBuffer = "";
+    const TYPING_MIN_INTERVAL_MS = 4000;
+    let lastTypingAt = 0;
+    let typingInFlight = false;
 
-    const enqueueProcessing = (): void => {
-      progressQueue = progressQueue.then(async () => {
-        try {
-          await ctx.reply("processing...");
-        } catch {
-          // ignore transient telegram send errors for progress pings
-        }
-      });
-    };
-
-    const isProgressLine = (line: string): boolean => {
-      const trimmed = line.trim();
-      if (!trimmed) {
-        return false;
+    const maybeSendTyping = (): void => {
+      const now = Date.now();
+      if (typingInFlight || now - lastTypingAt < TYPING_MIN_INTERVAL_MS) {
+        return;
       }
-      return (
-        /^thinking\b/i.test(trimmed) ||
-        /^exec\b/i.test(trimmed) ||
-        /^OpenAI Codex\b/i.test(trimmed) ||
-        /^mcp startup\b/i.test(trimmed) ||
-        /^tokens used\b/i.test(trimmed)
-      );
+
+      typingInFlight = true;
+      lastTypingAt = now;
+      void bot.telegram
+        .sendChatAction(chatId, "typing")
+        .catch(() => {
+          // ignore transient typing send errors
+        })
+        .finally(() => {
+          typingInFlight = false;
+        });
     };
 
-    const onChunk = (chunk: string): void => {
-      chunkBuffer += chunk;
-      const lines = chunkBuffer.split(/\r?\n/);
-      chunkBuffer = lines.pop() ?? "";
-
-      for (const line of lines) {
-        if (isProgressLine(line)) {
-          enqueueProcessing();
-        }
-      }
+    const onChunk = (): void => {
+      maybeSendTyping();
     };
-
-    const heartbeat = setInterval(() => {
-      enqueueProcessing();
-    }, 25000);
 
     try {
+      const planMode = store.getPlanMode(session.id);
+      const effectivePrompt = applyPlanModePrompt(prompt, planMode);
+      maybeSendTyping();
+
       const result = await runCodex({
         codexCommand: resolvedCodexCommand,
         codexArgsTemplate: config.codexArgsTemplate,
-        prompt,
+        prompt: effectivePrompt,
         sessionId: session.id,
         codexSessionId: session.codexSessionId,
         timeoutMs: config.codexTimeoutMs,
@@ -242,12 +284,6 @@ function attachHandlers(bot: Telegraf, resolvedCodexCommand: string): void {
         onStdoutChunk: onChunk,
         onStderrChunk: onChunk
       });
-
-      clearInterval(heartbeat);
-      if (chunkBuffer && isProgressLine(chunkBuffer)) {
-        enqueueProcessing();
-      }
-      await progressQueue;
 
       if (result.codexSessionId && result.codexSessionId !== session.codexSessionId) {
         store.setCodexSessionId(session.id, result.codexSessionId);
@@ -294,25 +330,50 @@ function attachHandlers(bot: Telegraf, resolvedCodexCommand: string): void {
         await ctx.reply(`${headerLines.join("\n")}\n\n${completionMessage}`);
       }
     } finally {
-      clearInterval(heartbeat);
       sessionLocks.delete(session.id);
     }
   }
+
 
   bot.command("help", async (ctx) => {
     await ctx.reply(
       [
         "Commands:",
         "/help",
-        "/new - create and switch to a new session",
-        `/session <${SLOT_TARGET_HINT}> - switch session`,
+        "/new - start a new chat in current session slot",
+        `/session <${SLOT_TARGET_HINT}> - switch session (create if empty)`,
         "/history [n] - show recent runs",
         "/where - show active session",
         "/whoami - show your chat id",
         `${LOG_COMMAND} - toggle interaction log`,
         "/cron ... - schedule prompts",
         "/slot <list|show|bind> - manage slot-codex mapping",
-        "/admin <status|restart> - admin controls",
+        "/plan <on|off|status> - toggle plan mode",
+        "/status - bot status (admin)",
+        "/restart - bot restart (admin)",
+        "Aliases: /h /n /s /w /i /l /p /c /t /a /r /y",
+        "Plain text is treated as execution prompt",
+        "Session slots rotate A->B->...->Z->A"
+      ].join("\n")
+    );
+  });
+
+  bot.command("h", async (ctx) => {
+    await ctx.reply(
+      [
+        "Commands:",
+        "/help",
+        "/new - start a new chat in current session slot",
+        `/session <${SLOT_TARGET_HINT}> - switch session (create if empty)`,
+        "/history [n] - show recent runs",
+        "/where - show active session",
+        "/whoami - show your chat id",
+        `${LOG_COMMAND} - toggle interaction log`,
+        "/cron ... - schedule prompts",
+        "/slot <list|show|bind> - manage slot-codex mapping",
+        "/status - bot status (admin)",
+        "/restart - bot restart (admin)",
+        "Aliases: /h /n /s /w /i /l /p /c /t /a /r /y",
         "Plain text is treated as execution prompt",
         "Session slots rotate A->B->...->Z->A"
       ].join("\n")
@@ -326,11 +387,46 @@ function attachHandlers(bot: Telegraf, resolvedCodexCommand: string): void {
       return;
     }
 
-    const session = store.createAndActivateSession(chatId, "telegram");
-    await ctx.reply(`Switched to new session: ${session.shortId}`);
+    const current = store.getOrCreateSessionByChat(chatId, "telegram");
+    const session = store.recreateSessionAtSlot(chatId, current.shortId, "telegram");
+    await ctx.reply(`Started new chat in session: ${session.shortId}`);
+  });
+
+  bot.command("n", async (ctx) => {
+    const chatId = chatIdOf(ctx);
+    if (!chatId || !isAllowed(chatId)) {
+      await ctx.reply("Access denied.");
+      return;
+    }
+
+    const current = store.getOrCreateSessionByChat(chatId, "telegram");
+    const session = store.recreateSessionAtSlot(chatId, current.shortId, "telegram");
+    await ctx.reply(`Started new chat in session: ${session.shortId}`);
   });
 
   bot.command("session", async (ctx) => {
+    const chatId = chatIdOf(ctx);
+    if (!chatId || !isAllowed(chatId)) {
+      await ctx.reply("Access denied.");
+      return;
+    }
+
+    const parts = (ctx.message as { text?: string }).text?.split(" ").filter(Boolean) ?? [];
+    const id = parts[1];
+    if (!id) {
+      await ctx.reply(`Usage: /session <${SLOT_TARGET_HINT}>`);
+      return;
+    }
+
+    try {
+      const session = store.setActiveSession(chatId, id, "telegram");
+      await ctx.reply(`Switched to session: ${session.shortId}`);
+    } catch (err) {
+      await ctx.reply(String(err));
+    }
+  });
+
+  bot.command("s", async (ctx) => {
     const chatId = chatIdOf(ctx);
     if (!chatId || !isAllowed(chatId)) {
       await ctx.reply("Access denied.");
@@ -363,7 +459,28 @@ function attachHandlers(bot: Telegraf, resolvedCodexCommand: string): void {
     await ctx.reply(`Active session: ${session.shortId}`);
   });
 
+  bot.command("w", async (ctx) => {
+    const chatId = chatIdOf(ctx);
+    if (!chatId || !isAllowed(chatId)) {
+      await ctx.reply("Access denied.");
+      return;
+    }
+
+    const session = store.getOrCreateSessionByChat(chatId, "telegram");
+    await ctx.reply(`Active session: ${session.shortId}`);
+  });
+
   bot.command("whoami", async (ctx) => {
+    const chatId = chatIdOf(ctx);
+    if (!chatId) {
+      await ctx.reply("No chat id available.");
+      return;
+    }
+
+    await ctx.reply(`chat_id: ${chatId}`);
+  });
+
+  bot.command("i", async (ctx) => {
     const chatId = chatIdOf(ctx);
     if (!chatId) {
       await ctx.reply("No chat id available.");
@@ -403,7 +520,162 @@ function attachHandlers(bot: Telegraf, resolvedCodexCommand: string): void {
     await ctx.reply(TEXT.logUsage);
   });
 
+  bot.command("l", async (ctx) => {
+    const chatId = chatIdOf(ctx);
+    if (!chatId || !isAllowed(chatId)) {
+      await ctx.reply("Access denied.");
+      return;
+    }
+
+    const parts = (ctx.message as { text?: string }).text?.split(" ").filter(Boolean) ?? [];
+    const arg = (parts[1] ?? "status").toLowerCase();
+
+    if (arg === "status") {
+      await ctx.reply(`Interaction log: ${interactionLogger.isEnabled() ? "ON" : "OFF"}`);
+      return;
+    }
+
+    if (arg === "on") {
+      await interactionLogger.setEnabled(true);
+      await ctx.reply(TEXT.logOn);
+      return;
+    }
+
+    if (arg === "off") {
+      await interactionLogger.setEnabled(false);
+      await ctx.reply(TEXT.logOff);
+      return;
+    }
+
+    await ctx.reply(TEXT.logUsage);
+  });
+
+  bot.command("plan", async (ctx) => {
+    const chatId = chatIdOf(ctx);
+    if (!chatId || !isAllowed(chatId)) {
+      await ctx.reply("Access denied.");
+      return;
+    }
+
+    const parts = (ctx.message as { text?: string }).text?.split(" ").filter(Boolean) ?? [];
+    const mode = (parts[1] ?? "status").toLowerCase();
+
+    if (mode === "status") {
+      const current = store.getOrCreateSessionByChat(chatId, "telegram");
+      await ctx.reply(`Plan mode (${current.shortId}): ${store.getPlanMode(current.id) ? "ON" : "OFF"}`);
+      return;
+    }
+
+    if (mode === "on") {
+      const current = store.getOrCreateSessionByChat(chatId, "telegram");
+      store.setPlanMode(current.id, true);
+      await ctx.reply(`Plan mode (${current.shortId}): ON`);
+      return;
+    }
+
+    if (mode === "off") {
+      const current = store.getOrCreateSessionByChat(chatId, "telegram");
+      store.setPlanMode(current.id, false);
+      await ctx.reply(`Plan mode (${current.shortId}): OFF`);
+      return;
+    }
+
+    await ctx.reply("Usage: /plan <on|off|status>");
+  });
+
+  bot.command("p", async (ctx) => {
+    const chatId = chatIdOf(ctx);
+    if (!chatId || !isAllowed(chatId)) {
+      await ctx.reply("Access denied.");
+      return;
+    }
+
+    const parts = (ctx.message as { text?: string }).text?.split(" ").filter(Boolean) ?? [];
+    const mode = (parts[1] ?? "status").toLowerCase();
+
+    if (mode === "status") {
+      const current = store.getOrCreateSessionByChat(chatId, "telegram");
+      await ctx.reply(`Plan mode (${current.shortId}): ${store.getPlanMode(current.id) ? "ON" : "OFF"}`);
+      return;
+    }
+
+    if (mode === "on") {
+      const current = store.getOrCreateSessionByChat(chatId, "telegram");
+      store.setPlanMode(current.id, true);
+      await ctx.reply(`Plan mode (${current.shortId}): ON`);
+      return;
+    }
+
+    if (mode === "off") {
+      const current = store.getOrCreateSessionByChat(chatId, "telegram");
+      store.setPlanMode(current.id, false);
+      await ctx.reply(`Plan mode (${current.shortId}): OFF`);
+      return;
+    }
+
+    await ctx.reply("Usage: /plan <on|off|status>");
+  });
+
   bot.command("slot", async (ctx) => {
+    const chatId = chatIdOf(ctx);
+    if (!chatId || !isAllowed(chatId)) {
+      await ctx.reply("Access denied.");
+      return;
+    }
+
+    const parts = (ctx.message as { text?: string }).text?.split(" ").filter(Boolean) ?? [];
+    const sub = (parts[1] ?? "list").toLowerCase();
+
+    if (sub === "list") {
+      const rows = store.listSlotBindings(chatId);
+      if (!rows.length) {
+        await ctx.reply("No slots found.");
+        return;
+      }
+      await ctx.reply(rows.map((r) => `${r.slotId} | session=${r.sessionId} | codex=${r.codexSessionId ?? "-"}`).join("\n"));
+      return;
+    }
+
+    if (sub === "show") {
+      const slot = (parts[2] ?? "").toUpperCase();
+      if (!slot) {
+        await ctx.reply("Usage: /slot show <A-Z>");
+        return;
+      }
+      const id = store.resolveSessionId(slot, chatId);
+      if (!id) {
+        await ctx.reply(`No session in slot ${slot}`);
+        return;
+      }
+      const session = store.getSession(id);
+      if (!session) {
+        await ctx.reply(`No session in slot ${slot}`);
+        return;
+      }
+      await ctx.reply(`${sessionSummary(session)}\nCodex Session: ${session.codexSessionId ?? "-"}`);
+      return;
+    }
+
+    if (sub === "bind") {
+      const slot = (parts[2] ?? "").toUpperCase();
+      const codexSessionId = parts[3] ?? "";
+      if (!slot || !codexSessionId) {
+        await ctx.reply("Usage: /slot bind <A-Z> <codex_session_id>");
+        return;
+      }
+      try {
+        const session = store.bindCodexSession(chatId, slot, codexSessionId);
+        await ctx.reply(`Bound ${session.shortId} -> ${session.codexSessionId}\nSession Name: ${session.id}`);
+      } catch (err) {
+        await ctx.reply(String(err));
+      }
+      return;
+    }
+
+    await ctx.reply("Usage: /slot <list|show|bind>");
+  });
+
+  bot.command("t", async (ctx) => {
     const chatId = chatIdOf(ctx);
     if (!chatId || !isAllowed(chatId)) {
       await ctx.reply("Access denied.");
@@ -478,7 +750,23 @@ function attachHandlers(bot: Telegraf, resolvedCodexCommand: string): void {
     }
   });
 
-  bot.command("admin", async (ctx) => {
+  bot.command("c", async (ctx) => {
+    const chatId = chatIdOf(ctx);
+    if (!chatId || !isAllowed(chatId)) {
+      await ctx.reply("Access denied.");
+      return;
+    }
+
+    const text = (ctx.message as { text?: string }).text ?? "/cron";
+    try {
+      const reply = await handleCronCommand(chatId, text);
+      await ctx.reply(reply);
+    } catch (err) {
+      await ctx.reply(String(err));
+    }
+  });
+
+  bot.command("status", async (ctx) => {
     const chatId = chatIdOf(ctx);
     if (!chatId || !isAllowed(chatId)) {
       await ctx.reply("Access denied.");
@@ -490,25 +778,82 @@ function attachHandlers(bot: Telegraf, resolvedCodexCommand: string): void {
       return;
     }
 
-    const parts = (ctx.message as { text?: string }).text?.split(" ").filter(Boolean) ?? [];
-    const sub = (parts[1] ?? "status").toLowerCase();
-
-    if (sub === "status") {
-      await ctx.reply(`Bot status: running
+    await ctx.reply(`Bot status: running
 PID: ${process.pid}`);
+  });
+
+  bot.command("a", async (ctx) => {
+    const chatId = chatIdOf(ctx);
+    if (!chatId || !isAllowed(chatId)) {
+      await ctx.reply("Access denied.");
       return;
     }
 
-    if (sub === "restart") {
-      await ctx.reply("Restarting bot process...");
-      setTimeout(() => process.exit(0), 500);
+    if (!isAdmin(chatId)) {
+      await ctx.reply("Admin only.");
       return;
     }
 
-    await ctx.reply("Usage: /admin <status|restart>");
+    await ctx.reply(`Bot status: running
+PID: ${process.pid}`);
+  });
+
+  bot.command("restart", async (ctx) => {
+    const chatId = chatIdOf(ctx);
+    if (!chatId || !isAllowed(chatId)) {
+      await ctx.reply("Access denied.");
+      return;
+    }
+
+    if (!isAdmin(chatId)) {
+      await ctx.reply("Admin only.");
+      return;
+    }
+
+    await ctx.reply("Restarting bot process...");
+    setTimeout(() => process.exit(0), 500);
+  });
+
+  bot.command("r", async (ctx) => {
+    const chatId = chatIdOf(ctx);
+    if (!chatId || !isAllowed(chatId)) {
+      await ctx.reply("Access denied.");
+      return;
+    }
+
+    if (!isAdmin(chatId)) {
+      await ctx.reply("Admin only.");
+      return;
+    }
+
+    await ctx.reply("Restarting bot process...");
+    setTimeout(() => process.exit(0), 500);
   });
 
   bot.command("history", async (ctx) => {
+    const chatId = chatIdOf(ctx);
+    if (!chatId || !isAllowed(chatId)) {
+      await ctx.reply("Access denied.");
+      return;
+    }
+
+    const parts = (ctx.message as { text?: string }).text?.split(" ").filter(Boolean) ?? [];
+    const limit = Number(parts[1] ?? "5");
+    const session = store.getOrCreateSessionByChat(chatId, "telegram");
+    const rows = store.listHistory(session.id, Number.isNaN(limit) ? 5 : limit);
+
+    if (!rows.length) {
+      await ctx.reply(TEXT.noHistory);
+      return;
+    }
+
+    const lines = rows.map(
+      (r) => `${r.id} | ${r.timestamp} | exit=${r.exitCode ?? "null"} | ${r.durationMs}ms | ${r.input.slice(0, 60)}`
+    );
+    await ctx.reply(lines.join("\n"));
+  });
+
+  bot.command("y", async (ctx) => {
     const chatId = chatIdOf(ctx);
     if (!chatId || !isAllowed(chatId)) {
       await ctx.reply("Access denied.");
@@ -559,18 +904,33 @@ export async function startTelegramBot(): Promise<void> {
 
   await bot.telegram.setMyCommands([
     { command: "help", description: "Show help" },
-    { command: "new", description: "Create and switch session" },
+    { command: "new", description: "Start new chat in current slot" },
     { command: "session", description: "Switch session A-Z" },
     { command: "history", description: "Show recent runs" },
     { command: "where", description: "Show active session" },
     { command: "whoami", description: "Show your chat id" },
     { command: "log", description: "Toggle interaction logging" },
+    { command: "plan", description: "Toggle plan mode" },
     { command: "slot", description: "Manage slot bindings" },
     { command: "cron", description: "Manage scheduled prompts" },
-    { command: "admin", description: "Admin controls" }
+    { command: "status", description: "Admin bot status" },
+    { command: "restart", description: "Admin restart bot" },
+    { command: "h", description: "Alias: help" },
+    { command: "n", description: "Alias: new" },
+    { command: "s", description: "Alias: session" },
+    { command: "w", description: "Alias: where" },
+    { command: "i", description: "Alias: whoami" },
+    { command: "l", description: "Alias: log" },
+    { command: "p", description: "Alias: plan" },
+    { command: "t", description: "Alias: slot" },
+    { command: "c", description: "Alias: cron" },
+    { command: "a", description: "Alias: status" },
+    { command: "r", description: "Alias: restart" },
+    { command: "y", description: "Alias: history" }
   ]);
 
   await bot.launch();
+  await notifyBotStarted(bot);
 
   process.once("SIGINT", () => bot.stop("SIGINT"));
   process.once("SIGTERM", () => bot.stop("SIGTERM"));
@@ -579,5 +939,6 @@ export async function startTelegramBot(): Promise<void> {
 if (require.main === module) {
   void startTelegramBot();
 }
+
 
 
