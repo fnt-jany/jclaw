@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>jclaw web chat</title>
+  <title>jclaw web</title>
   <style>
     :root {
       --bg: #f3efe7;
@@ -156,14 +156,16 @@
 
     .composer {
       display: grid;
-      grid-template-columns: 1fr auto;
+      grid-template-columns: auto 1fr auto;
       gap: 8px;
       padding: 12px;
       border-top: 1px solid var(--line);
       background: #fff;
+      align-items: end;
     }
 
     input,
+    textarea,
     button {
       border: 1px solid var(--line);
       border-radius: 10px;
@@ -180,6 +182,15 @@
     }
 
     button:hover { background: var(--accent-2); }
+
+    textarea {
+      resize: none;
+      min-height: 42px;
+      max-height: 220px;
+      overflow-y: auto;
+      line-height: 1.4;
+    }
+
 
     .btn-muted {
       background: #fff;
@@ -238,6 +249,11 @@
       font-size: 12px;
     }
 
+    #authError {
+      color: #b42318;
+      font-weight: 600;
+    }
+
     .hidden {
       display: none !important;
     }
@@ -292,7 +308,7 @@
       }
 
       .composer {
-        grid-template-columns: 1fr auto;
+        grid-template-columns: auto 1fr auto;
       }
 
       .composer button {
@@ -352,7 +368,7 @@
 
   <main id="app" class="app hidden">
     <section class="top">
-      <div class="brand">jclaw web chat</div>
+      <div class="brand">jclaw web</div>
       <div class="top-actions">
         <div id="status" class="status">connecting...</div>
         <button id="logoutBtn" type="button" class="btn-muted">Logout</button>
@@ -368,7 +384,8 @@
     <section id="log"></section>
 
     <form id="composer" class="composer">
-      <input id="message" autocomplete="off" placeholder="Type message or /command" />
+      <input id="fileInput" type="file" />
+      <textarea id="message" rows="1" autocomplete="off" placeholder="Type message or /command"></textarea>
       <button type="submit">Send</button>
     </form>
   </main>
@@ -390,6 +407,7 @@
     const slotPrevEl = document.getElementById('slotPrev');
     const slotNextEl = document.getElementById('slotNext');
     const logEl = document.getElementById('log');
+    const fileInputEl = document.getElementById('fileInput');
     const messageEl = document.getElementById('message');
     const composerEl = document.getElementById('composer');
 
@@ -397,12 +415,15 @@
     const SLOT_PAGE_SIZE = 8;
     const SLOT_PAGE_STARTS = [0, 8, 16, 24];
     const HISTORY_LIMIT = 120;
+    const API_BASE = String(window.JCLAW_API_BASE || '').replace(/\/$/, '');
     let slotPageStart = 0;
     let currentSlot = '';
 
     const sessionLogs = new Map();
     const hydratedSlots = new Set();
     const hydratingSlots = new Map();
+    const sessionInputState = new Map();
+
 
     function sessionKey(slot) {
       return slot || '_default';
@@ -446,6 +467,31 @@
 
     function setStatus(s) {
       statusEl.textContent = s;
+    }
+
+    function resizeMessageInput() {
+      messageEl.style.height = 'auto';
+      const targetHeight = Math.min(messageEl.scrollHeight, 220);
+      messageEl.style.height = `${Math.max(42, targetHeight)}px`;
+    }
+
+    function getInputState(slot = currentSlot) {
+      const key = sessionKey(slot);
+      if (!sessionInputState.has(key)) {
+        sessionInputState.set(key, {
+          draft: '',
+          history: [],
+          historyIndex: -1,
+          historyDraft: ''
+        });
+      }
+      return sessionInputState.get(key);
+    }
+
+    function applyInputState(slot = currentSlot) {
+      const state = getInputState(slot);
+      messageEl.value = state.draft;
+      resizeMessageInput();
     }
 
     function formatHistoryRows(rows, slot) {
@@ -500,12 +546,21 @@ ${row.error}` : '']
     function showApp() {
       authOverlayEl.classList.add('hidden');
       appEl.classList.remove('hidden');
+      resizeMessageInput();
       messageEl.focus();
     }
 
+    function apiUrl(path) {
+      if (!API_BASE) {
+        return path;
+      }
+      return `${API_BASE}${path}`;
+    }
+
     async function api(path, options = {}) {
-      const res = await fetch(path, {
+      const res = await fetch(apiUrl(path), {
         ...options,
+        credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
           ...(options.headers || {})
@@ -557,6 +612,7 @@ ${row.error}` : '']
       setStatus(`slot=${statusSlot} | session=${data.sessionName} | log=${data.logEnabled ? 'ON' : 'OFF'}${authText}`);
       renderSessionTabs(options.adoptCurrent);
       renderCurrentLog();
+      applyInputState(statusSlot);
       void ensureSessionHydrated(statusSlot);
     }
 
@@ -564,6 +620,24 @@ ${row.error}` : '']
       const data = await api('/api/state', { method: 'GET', headers: {} });
       applyState(data);
       return data;
+    }
+
+
+    function readFileAsBase64(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const result = String(reader.result || '');
+          const base64 = result.includes(',') ? result.split(',')[1] : '';
+          if (!base64) {
+            reject(new Error('Failed to read file.'));
+            return;
+          }
+          resolve(base64);
+        };
+        reader.onerror = () => reject(new Error('Failed to read file.'));
+        reader.readAsDataURL(file);
+      });
     }
 
     async function sendMessage(text, options = { adoptCurrent: true }) {
@@ -635,10 +709,26 @@ ${row.error}` : '']
       }
 
       try {
-        await api('/api/auth/dev', {
+        const res = await fetch('/api/auth/dev', {
           method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ password })
         });
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok) {
+          const remaining = Number.isFinite(data.remainingAttempts)
+            ? Number(data.remainingAttempts)
+            : null;
+
+          if (remaining !== null && remaining >= 0) {
+            showAuth(`Incorrect password. Remaining attempts: ${remaining}`);
+          } else {
+            showAuth(String(data.error || 'Login failed.'));
+          }
+          return;
+        }
+
         devPasswordEl.value = '';
         await bootstrapApp();
       } catch (err) {
@@ -671,14 +761,89 @@ ${row.error}` : '']
       await ensureAuth();
     });
 
+    messageEl.addEventListener('input', () => {
+      const state = getInputState();
+      state.draft = messageEl.value;
+      state.historyIndex = -1;
+      state.historyDraft = '';
+      resizeMessageInput();
+    });
+
+    messageEl.addEventListener('keydown', (e) => {
+      const state = getInputState();
+
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        composerEl.requestSubmit();
+        return;
+      }
+
+      if (e.key === 'ArrowUp') {
+        const atStart = messageEl.selectionStart === 0 && messageEl.selectionEnd === 0;
+        if (!atStart || state.history.length === 0) {
+          return;
+        }
+
+        e.preventDefault();
+        if (state.historyIndex === -1) {
+          state.historyDraft = messageEl.value;
+        }
+        if (state.historyIndex < state.history.length - 1) {
+          state.historyIndex += 1;
+        }
+
+        const value = state.history[state.history.length - 1 - state.historyIndex] ?? '';
+        messageEl.value = value;
+        state.draft = value;
+        messageEl.selectionStart = messageEl.selectionEnd = messageEl.value.length;
+        resizeMessageInput();
+        return;
+      }
+
+      if (e.key === 'ArrowDown') {
+        if (state.historyIndex === -1) {
+          return;
+        }
+
+        e.preventDefault();
+        state.historyIndex -= 1;
+        if (state.historyIndex === -1) {
+          messageEl.value = state.historyDraft;
+        } else {
+          messageEl.value = state.history[state.history.length - 1 - state.historyIndex] ?? '';
+        }
+        state.draft = messageEl.value;
+        messageEl.selectionStart = messageEl.selectionEnd = messageEl.value.length;
+        resizeMessageInput();
+      }
+    });
+
     composerEl.addEventListener('submit', async (e) => {
       e.preventDefault();
-      const text = messageEl.value.trim();
-      if (!text) return;
+      const rawText = messageEl.value;
+      const text = rawText.trim();
+      const file = fileInputEl.files && fileInputEl.files[0] ? fileInputEl.files[0] : null;
+      if (!text && !file) return;
+
+      const state = getInputState();
+      if (text) {
+        state.history.push(text);
+        if (state.history.length > 100) {
+          state.history.shift();
+        }
+      }
+      state.historyIndex = -1;
+      state.historyDraft = '';
 
       const slotAtSend = currentSlot;
-      appendBubble(text, 'user', slotAtSend);
+      const userPreview = file ? `${text ? `${text}
+
+` : ''}[file] ${file.name}` : text;
+      appendBubble(userPreview, 'user', slotAtSend);
       messageEl.value = '';
+      state.draft = '';
+      fileInputEl.value = '';
+      resizeMessageInput();
       const pending = appendBubble('processing...', 'bot', slotAtSend);
       let dots = 0;
       const ticker = setInterval(() => {
@@ -687,7 +852,21 @@ ${row.error}` : '']
       }, 1200);
 
       try {
-        const data = await sendMessage(text, { adoptCurrent: currentSlot === slotAtSend });
+        const payload = { message: text, slot: slotAtSend };
+        if (file) {
+          const contentBase64 = await readFileAsBase64(file);
+          payload.attachment = {
+            fileName: file.name,
+            mimeType: file.type || 'application/octet-stream',
+            contentBase64
+          };
+        }
+
+        const data = await api('/api/chat', {
+          method: 'POST',
+          body: JSON.stringify(payload)
+        });
+        applyState(data, { adoptCurrent: currentSlot === slotAtSend });
         updateBubble(pending, { text: data.reply, type: 'bot' });
       } catch (err) {
         updateBubble(pending, { text: String(err), type: 'err' });

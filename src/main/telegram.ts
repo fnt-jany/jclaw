@@ -65,8 +65,8 @@ async function notifyProcessBooted(): Promise<void> {
   console.log(`[jclaw] startup process notify targets: ${targets.join(",")}`);
   const text = [
     "[jclaw] Telegram process booted",
-    `build: ${BUILD_TIME_ISO} (KST ${formatKst(BUILD_TIME_ISO)})`,
-    `boot: ${startedAt} (KST ${formatKst(startedAt)})`
+    `build (KST): ${formatKst(BUILD_TIME_ISO)}`,
+    `boot (KST): ${formatKst(startedAt)}`
   ].join("\n");
 
   for (const chatId of targets) {

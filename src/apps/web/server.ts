@@ -1,6 +1,6 @@
 import dotenv from "dotenv";
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { loadConfig } from "../../core/config/env";
@@ -30,9 +30,17 @@ let codexCommandResolved = "";
 const WEB_PORT = Number(process.env.JCLAW_WEB_PORT ?? "3100");
 const WEB_HOST = process.env.JCLAW_WEB_HOST ?? "127.0.0.1";
 
+type ChatAttachment = {
+  fileName?: string;
+  mimeType?: string;
+  contentBase64?: string;
+};
+
 type ChatRequest = {
   chatId?: string;
+  slot?: string;
   message?: string;
+  attachment?: ChatAttachment;
 };
 
 type AuthRequest = {
@@ -51,7 +59,20 @@ const WEB_CHAT_ID = process.env.WEB_CHAT_ID?.trim() || defaultChatId();
 const WEB_AUTH_COOKIE = "jclaw_web_auth";
 const WEB_SESSION_TTL_MS = 1000 * 60 * 60 * 12;
 const WEB_DEV_PASSWORD = process.env.WEB_DEV_PASSWORD ?? "3437";
+const WEB_DEV_MAX_FAILED_ATTEMPTS = 3;
 const WEB_GOOGLE_CLIENT_ID = (process.env.WEB_GOOGLE_CLIENT_ID ?? "").trim();
+const WEB_AUTH_COOKIE_SAMESITE = (process.env.WEB_AUTH_COOKIE_SAMESITE ?? "Lax").trim();
+const WEB_AUTH_COOKIE_SECURE = (process.env.WEB_AUTH_COOKIE_SECURE ?? (process.env.NODE_ENV === "production" ? "true" : "false")).trim().toLowerCase() === "true";
+const WEB_ALLOWED_ORIGINS = new Set(
+  (process.env.WEB_ALLOWED_ORIGINS ?? "")
+    .split(",")
+    .map((v) => v.trim())
+    .filter(Boolean)
+);
+const WEB_UPLOAD_DIR = path.join(dataDir, "web_uploads");
+const WEB_UPLOAD_MAX_FILES = Math.max(1, Number(process.env.WEB_UPLOAD_MAX_FILES ?? "50") || 50);
+const WEB_UPLOAD_MAX_BYTES = Math.max(1024 * 1024, Number(process.env.WEB_UPLOAD_MAX_BYTES ?? String(15 * 1024 * 1024)) || 15 * 1024 * 1024);
+
 const WEB_ALLOWED_EMAILS = new Set(
   (process.env.WEB_ALLOWED_EMAILS ?? "")
     .split(",")
@@ -59,6 +80,8 @@ const WEB_ALLOWED_EMAILS = new Set(
     .filter(Boolean)
 );
 const webAuthSessions = new Map<string, WebAuthSession>();
+let devPasswordFailedAttempts = 0;
+let devPasswordLocked = false;
 
 function pruneExpiredWebAuthSessions(): void {
   const now = Date.now();
@@ -87,13 +110,14 @@ function parseCookies(req: IncomingMessage): Map<string, string> {
 }
 
 function setAuthCookie(res: ServerResponse, token: string): void {
-  const isSecure = process.env.NODE_ENV === "production";
+  const sameSite = WEB_AUTH_COOKIE_SAMESITE;
+  const isSecure = WEB_AUTH_COOKIE_SECURE;
   const maxAgeSeconds = Math.floor(WEB_SESSION_TTL_MS / 1000);
   const parts = [
     `${WEB_AUTH_COOKIE}=${encodeURIComponent(token)}`,
     "Path=/",
     "HttpOnly",
-    "SameSite=Lax",
+    `SameSite=${sameSite}`,
     `Max-Age=${maxAgeSeconds}`
   ];
   if (isSecure) {
@@ -103,12 +127,13 @@ function setAuthCookie(res: ServerResponse, token: string): void {
 }
 
 function clearAuthCookie(res: ServerResponse): void {
-  const isSecure = process.env.NODE_ENV === "production";
+  const sameSite = WEB_AUTH_COOKIE_SAMESITE;
+  const isSecure = WEB_AUTH_COOKIE_SECURE;
   const parts = [
     `${WEB_AUTH_COOKIE}=`,
     "Path=/",
     "HttpOnly",
-    "SameSite=Lax",
+    `SameSite=${sameSite}`,
     "Max-Age=0"
   ];
   if (isSecure) {
@@ -162,6 +187,40 @@ function isAllowedEmail(email: string): boolean {
   return WEB_ALLOWED_EMAILS.has(email.toLowerCase());
 }
 
+function isAllowedOrigin(origin: string): boolean {
+  if (!origin) {
+    return false;
+  }
+  if (WEB_ALLOWED_ORIGINS.size === 0) {
+    return false;
+  }
+
+  try {
+    const normalized = new URL(origin).origin;
+    return WEB_ALLOWED_ORIGINS.has(normalized);
+  } catch {
+    return false;
+  }
+}
+
+function applyCors(req: IncomingMessage, res: ServerResponse): boolean {
+  const origin = String(req.headers.origin ?? "").trim();
+  if (!origin) {
+    return true;
+  }
+
+  if (!isAllowedOrigin(origin)) {
+    return false;
+  }
+
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Vary", "Origin");
+  return true;
+}
+
 async function verifyGoogleIdToken(idToken: string): Promise<string | null> {
   const url = new URL("https://oauth2.googleapis.com/tokeninfo");
   url.searchParams.set("id_token", idToken);
@@ -203,6 +262,70 @@ function normalizeCommand(line: string): string {
     return `/${line.slice(1)}`;
   }
   return line;
+}
+
+function sanitizeFilenamePart(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+
+function extensionFromMimeType(mimeType: string): string {
+  const normalized = mimeType.toLowerCase();
+  if (normalized === "image/jpeg") return ".jpg";
+  if (normalized === "image/png") return ".png";
+  if (normalized === "image/webp") return ".webp";
+  if (normalized === "image/gif") return ".gif";
+  if (normalized === "application/pdf") return ".pdf";
+  if (normalized === "text/plain") return ".txt";
+  return "";
+}
+
+async function pruneWebUploads(maxFiles: number): Promise<void> {
+  await mkdir(WEB_UPLOAD_DIR, { recursive: true });
+  const entries = await readdir(WEB_UPLOAD_DIR, { withFileTypes: true });
+  const files: Array<{ fullPath: string; mtimeMs: number }> = [];
+
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const fullPath = path.resolve(WEB_UPLOAD_DIR, entry.name);
+    const info = await stat(fullPath);
+    files.push({ fullPath, mtimeMs: info.mtimeMs });
+  }
+
+  if (files.length < maxFiles) return;
+
+  files.sort((a, b) => a.mtimeMs - b.mtimeMs);
+  const removeCount = files.length - maxFiles + 1;
+  for (let i = 0; i < removeCount; i += 1) {
+    await unlink(files[i].fullPath).catch(() => {
+      // ignore stale file errors
+    });
+  }
+}
+
+async function saveWebAttachment(attachment: ChatAttachment): Promise<string> {
+  const contentBase64 = (attachment.contentBase64 ?? "").trim();
+  if (!contentBase64) {
+    throw new Error("attachment.contentBase64 is required");
+  }
+
+  const bytes = Buffer.from(contentBase64, "base64");
+  if (!bytes.length) {
+    throw new Error("attachment is empty");
+  }
+  if (bytes.length > WEB_UPLOAD_MAX_BYTES) {
+    throw new Error(`attachment too large (max ${WEB_UPLOAD_MAX_BYTES} bytes)`);
+  }
+
+  const mimeType = (attachment.mimeType ?? "").trim().toLowerCase();
+  const extFromName = path.extname(attachment.fileName ?? "");
+  const ext = sanitizeFilenamePart((extFromName || extensionFromMimeType(mimeType) || ".bin").toLowerCase()) || ".bin";
+
+  await pruneWebUploads(WEB_UPLOAD_MAX_FILES);
+
+  const fileName = `web_${Date.now()}_${Math.floor(Math.random() * 100000)}${ext}`;
+  const localPath = path.resolve(WEB_UPLOAD_DIR, fileName);
+  await writeFile(localPath, bytes);
+  return localPath;
 }
 
 function formatResult(output: string, error: string | null, maxChars: number): string {
@@ -761,9 +884,10 @@ async function handleApiChat(req: IncomingMessage, res: ServerResponse): Promise
   }
 
   const message = (payload.message ?? "").trim();
+  const hasAttachment = Boolean(payload.attachment?.contentBase64);
 
-  if (!message) {
-    json(res, 400, { error: "message is required" });
+  if (!message && !hasAttachment) {
+    json(res, 400, { error: "message or attachment is required" });
     return;
   }
 
@@ -775,10 +899,25 @@ async function handleApiChat(req: IncomingMessage, res: ServerResponse): Promise
   }
 
   try {
-    const { session } = getState(chatId);
-    const normalized = normalizeCommand(message);
+    const requestedSlot = (payload.slot ?? "").trim().toUpperCase();
+    const session = requestedSlot
+      ? store.ensureSessionForTarget(chatId, requestedSlot)
+      : getState(chatId).session;
 
-    if (normalized.startsWith("/")) {
+    let effectivePrompt = message;
+    if (hasAttachment) {
+      const localPath = await saveWebAttachment(payload.attachment ?? {});
+      effectivePrompt = [
+        "User uploaded a file from web chat.",
+        `Local file path: ${localPath}`,
+        "Open and analyze the file directly.",
+        message ? `User request: ${message}` : "If no explicit request, summarize the file contents."
+      ].join("\n");
+    }
+
+    const normalized = normalizeCommand(effectivePrompt);
+
+    if (!hasAttachment && normalized.startsWith("/")) {
       const cmdResult = await handleCommand(chatId, session, normalized);
       if (cmdResult) {
         json(res, 200, cmdResult);
@@ -834,6 +973,9 @@ async function handleApiAuthStatus(req: IncomingMessage, res: ServerResponse): P
     googleClientId: WEB_GOOGLE_CLIENT_ID || null,
     googleEnabled: Boolean(WEB_GOOGLE_CLIENT_ID),
     devPasswordEnabled: true,
+    devPasswordLocked,
+    devPasswordFailedAttempts,
+    devPasswordRemainingAttempts: Math.max(0, WEB_DEV_MAX_FAILED_ATTEMPTS - devPasswordFailedAttempts),
     allowedEmailsConfigured: WEB_ALLOWED_EMAILS.size > 0
   });
 }
@@ -869,6 +1011,11 @@ async function handleApiAuthGoogle(req: IncomingMessage, res: ServerResponse): P
 }
 
 async function handleApiAuthDev(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (devPasswordLocked) {
+    json(res, 423, { error: "Developer login is locked. Restart server to unlock." });
+    return;
+  }
+
   let payload: AuthRequest;
   try {
     payload = JSON.parse(await readBody(req)) as AuthRequest;
@@ -884,10 +1031,22 @@ async function handleApiAuthDev(req: IncomingMessage, res: ServerResponse): Prom
   }
 
   if (password !== WEB_DEV_PASSWORD) {
-    json(res, 401, { error: "Invalid development password" });
+    devPasswordFailedAttempts += 1;
+    if (devPasswordFailedAttempts >= WEB_DEV_MAX_FAILED_ATTEMPTS) {
+      devPasswordLocked = true;
+      console.warn("[jclaw-web] developer login locked after too many failed attempts; restart server to unlock.");
+      json(res, 423, { error: "Developer login locked after 3 failed attempts. Restart server to unlock." });
+      return;
+    }
+
+    json(res, 401, {
+      error: "Invalid development password",
+      remainingAttempts: WEB_DEV_MAX_FAILED_ATTEMPTS - devPasswordFailedAttempts
+    });
     return;
   }
 
+  devPasswordFailedAttempts = 0;
   const session = createAuthSession("dev-login@local", "dev");
   setAuthCookie(res, session.token);
   json(res, 200, { ok: true, email: session.email, method: session.method });
@@ -982,6 +1141,18 @@ export async function startWebServer(): Promise<void> {
   const server = createServer(async (req, res) => {
     if (!req.url || !req.method) {
       json(res, 400, { error: "Bad request" });
+      return;
+    }
+
+    const corsAllowed = applyCors(req, res);
+    if (!corsAllowed) {
+      json(res, 403, { error: "Origin not allowed" });
+      return;
+    }
+
+    if (req.method === "OPTIONS") {
+      res.writeHead(204);
+      res.end();
       return;
     }
 

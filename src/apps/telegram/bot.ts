@@ -1,5 +1,6 @@
 import dotenv from "dotenv";
 import path from "node:path";
+import { mkdir, readdir, stat, unlink, writeFile } from "node:fs/promises";
 import { Telegraf } from "telegraf";
 import type { Context } from "telegraf";
 import { loadConfig } from "../../core/config/env";
@@ -26,6 +27,81 @@ const interactionLogger = new InteractionLogger(interactionLogPath);
 const cronStore = new CronStore(config.dbFile);
 const sessionLocks = new Set<string>();
 let startupNotificationSent = false;
+const telegramUploadDir = path.join(dataDir, "telegram_uploads");
+const TELEGRAM_UPLOAD_MAX_FILES = Math.max(1, Number(process.env.TELEGRAM_UPLOAD_MAX_FILES ?? "200") || 200);
+
+function sanitizeFilenamePart(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+
+function extensionFromMimeType(mimeType: string): string {
+  const normalized = mimeType.toLowerCase();
+  if (normalized === "image/jpeg") return ".jpg";
+  if (normalized === "image/png") return ".png";
+  if (normalized === "image/webp") return ".webp";
+  if (normalized === "image/gif") return ".gif";
+  if (normalized === "image/heic") return ".heic";
+  if (normalized === "image/heif") return ".heif";
+  return "";
+}
+
+async function pruneTelegramUploads(maxFiles: number): Promise<void> {
+  await mkdir(telegramUploadDir, { recursive: true });
+  const entries = await readdir(telegramUploadDir, { withFileTypes: true });
+  const files: Array<{ fullPath: string; mtimeMs: number }> = [];
+
+  for (const entry of entries) {
+    if (!entry.isFile()) {
+      continue;
+    }
+
+    const fullPath = path.resolve(telegramUploadDir, entry.name);
+    const info = await stat(fullPath);
+    files.push({ fullPath, mtimeMs: info.mtimeMs });
+  }
+
+  if (files.length < maxFiles) {
+    return;
+  }
+
+  files.sort((a, b) => a.mtimeMs - b.mtimeMs);
+  const removeCount = files.length - maxFiles + 1;
+  for (let i = 0; i < removeCount; i += 1) {
+    await unlink(files[i].fullPath).catch(() => {
+      // ignore stale/delete race
+    });
+  }
+}
+
+async function downloadTelegramFile(fileId: string, suggestedExt: string): Promise<string> {
+  const url = `https://api.telegram.org/bot${config.telegramBotToken}/getFile?file_id=${encodeURIComponent(fileId)}`;
+  const infoRes = await fetch(url);
+  if (!infoRes.ok) {
+    throw new Error(`Failed to query Telegram file info (${infoRes.status})`);
+  }
+
+  const info = (await infoRes.json()) as { ok?: boolean; result?: { file_path?: string } };
+  const filePath = info.result?.file_path;
+  if (!info.ok || !filePath) {
+    throw new Error("Telegram file path is missing");
+  }
+
+  const fileUrl = `https://api.telegram.org/file/bot${config.telegramBotToken}/${filePath}`;
+  const fileRes = await fetch(fileUrl);
+  if (!fileRes.ok) {
+    throw new Error(`Failed to download Telegram file (${fileRes.status})`);
+  }
+
+  const bytes = Buffer.from(await fileRes.arrayBuffer());
+  const extFromPath = path.extname(filePath);
+  const ext = sanitizeFilenamePart((extFromPath || suggestedExt || "").toLowerCase()) || ".bin";
+  const name = `tg_${Date.now()}_${Math.floor(Math.random() * 100000)}${ext}`;
+
+  await pruneTelegramUploads(TELEGRAM_UPLOAD_MAX_FILES);
+  const localPath = path.resolve(telegramUploadDir, name);
+  await writeFile(localPath, bytes);
+  return localPath;
+}
 
 function isAllowed(chatId: string): boolean {
   return config.allowedChatIds.size === 0 || config.allowedChatIds.has(chatId);
@@ -93,8 +169,8 @@ async function notifyBotStarted(bot: Telegraf): Promise<void> {
   const startedAt = new Date().toISOString();
   const message = [
     "[jclaw] Telegram bot started",
-    `build: ${BUILD_TIME_ISO} (KST ${formatKst(BUILD_TIME_ISO)})`,
-    `started: ${startedAt} (KST ${formatKst(startedAt)})`
+    `build (KST): ${formatKst(BUILD_TIME_ISO)}`,
+    `started (KST): ${formatKst(startedAt)}`
   ].join("\n");
 
   console.log(`[jclaw] startup notify targets: ${targets.join(",")}`);
@@ -344,49 +420,52 @@ function attachHandlers(bot: Telegraf, resolvedCodexCommand: string): void {
   }
 
 
+  function buildHelpText(): string {
+    return [
+      "Commands:",
+      "/help - show help",
+      "e - show help",
+      "/new (/n) - start a new chat in current session slot",
+      `/session <${SLOT_TARGET_HINT}> (/s) - switch session (create if empty)`,
+      "/history [n] (/h, /y) - show recent runs",
+      "/where (/w) - show active session",
+      "/whoami (/i) - show your chat id",
+      `${LOG_COMMAND} (/l) - toggle interaction log`,
+      "/cron ... (/c) - schedule prompts",
+      "/slot <list|show|bind> (/t) - manage slot-codex mapping",
+      "/plan <on|off|status> (/p) - toggle plan mode",
+      "/status (/a) - bot status (admin)",
+      "/restart (/r) - bot restart (admin)",
+      "Plain text is treated as execution prompt",
+      "Session slots rotate A->B->...->Z->A"
+    ].join("\n");
+  }
+
   bot.command("help", async (ctx) => {
-    await ctx.reply(
-      [
-        "Commands:",
-        "/help",
-        "/new - start a new chat in current session slot",
-        `/session <${SLOT_TARGET_HINT}> - switch session (create if empty)`,
-        "/history [n] - show recent runs",
-        "/where - show active session",
-        "/whoami - show your chat id",
-        `${LOG_COMMAND} - toggle interaction log`,
-        "/cron ... - schedule prompts",
-        "/slot <list|show|bind> - manage slot-codex mapping",
-        "/plan <on|off|status> - toggle plan mode",
-        "/status - bot status (admin)",
-        "/restart - bot restart (admin)",
-        "Aliases: /h /n /s /w /i /l /p /c /t /a /r /y",
-        "Plain text is treated as execution prompt",
-        "Session slots rotate A->B->...->Z->A"
-      ].join("\n")
-    );
+    await ctx.reply(buildHelpText());
   });
 
   bot.command("h", async (ctx) => {
-    await ctx.reply(
-      [
-        "Commands:",
-        "/help",
-        "/new - start a new chat in current session slot",
-        `/session <${SLOT_TARGET_HINT}> - switch session (create if empty)`,
-        "/history [n] - show recent runs",
-        "/where - show active session",
-        "/whoami - show your chat id",
-        `${LOG_COMMAND} - toggle interaction log`,
-        "/cron ... - schedule prompts",
-        "/slot <list|show|bind> - manage slot-codex mapping",
-        "/status - bot status (admin)",
-        "/restart - bot restart (admin)",
-        "Aliases: /h /n /s /w /i /l /p /c /t /a /r /y",
-        "Plain text is treated as execution prompt",
-        "Session slots rotate A->B->...->Z->A"
-      ].join("\n")
+    const chatId = chatIdOf(ctx);
+    if (!chatId || !isAllowed(chatId)) {
+      await ctx.reply("Access denied.");
+      return;
+    }
+
+    const parts = (ctx.message as { text?: string }).text?.split(" ").filter(Boolean) ?? [];
+    const limit = Number(parts[1] ?? "5");
+    const session = store.getOrCreateSessionByChat(chatId, "telegram");
+    const rows = store.listHistory(session.id, Number.isNaN(limit) ? 5 : limit);
+
+    if (!rows.length) {
+      await ctx.reply(TEXT.noHistory);
+      return;
+    }
+
+    const lines = rows.map(
+      (r) => `${r.id} | ${r.timestamp} | exit=${r.exitCode ?? "null"} | ${r.durationMs}ms | ${r.input.slice(0, 60)}`
     );
+    await ctx.reply(lines.join("\n"));
   });
 
   bot.command("new", async (ctx) => {
@@ -885,6 +964,82 @@ PID: ${process.pid}`);
     await ctx.reply(lines.join("\n"));
   });
 
+  bot.on("photo", async (ctx) => {
+    const chatId = chatIdOf(ctx);
+    if (!chatId || !isAllowed(chatId)) {
+      await ctx.reply("Access denied.");
+      return;
+    }
+
+    const message = ctx.message as { photo?: Array<{ file_id: string }>; caption?: string };
+    const photos = message.photo ?? [];
+    const picked = photos[photos.length - 1];
+    if (!picked?.file_id) {
+      await ctx.reply("Photo file id is missing.");
+      return;
+    }
+
+    try {
+      const localPath = await downloadTelegramFile(picked.file_id, ".jpg");
+      const caption = (message.caption ?? "").trim();
+      const prompt = [
+        "User sent an image from Telegram.",
+        `Local file path: ${localPath}`,
+        "Open and analyze the image file directly.",
+        caption ? `User request: ${caption}` : "If no explicit request, summarize what is in the image."
+      ].join("\n");
+
+      await executePrompt(ctx, prompt);
+    } catch (err) {
+      await ctx.reply(`Failed to download photo: ${String(err)}`);
+    }
+  });
+
+  bot.on("document", async (ctx) => {
+    const chatId = chatIdOf(ctx);
+    if (!chatId || !isAllowed(chatId)) {
+      await ctx.reply("Access denied.");
+      return;
+    }
+
+    const message = ctx.message as {
+      document?: { file_id: string; mime_type?: string; file_name?: string };
+      caption?: string;
+    };
+    const document = message.document;
+    if (!document?.file_id) {
+      await ctx.reply("Document file id is missing.");
+      return;
+    }
+
+    const mimeType = (document.mime_type ?? "").toLowerCase();
+    if (mimeType && !mimeType.startsWith("image/")) {
+      await ctx.reply("Only image documents are supported right now.");
+      return;
+    }
+
+    try {
+      const extFromName = path.extname(document.file_name ?? "");
+      const ext = extFromName || extensionFromMimeType(mimeType) || ".bin";
+      const localPath = await downloadTelegramFile(document.file_id, ext);
+      const caption = (message.caption ?? "").trim();
+      const prompt = [
+        "User sent an image file from Telegram.",
+        `Local file path: ${localPath}`,
+        "Open and analyze the image file directly.",
+        caption ? `User request: ${caption}` : "If no explicit request, summarize what is in the image."
+      ].join("\n");
+
+      await executePrompt(ctx, prompt);
+    } catch (err) {
+      await ctx.reply(`Failed to download document image: ${String(err)}`);
+    }
+  });
+
+  bot.hears(/^e$/i, async (ctx) => {
+    await ctx.reply(buildHelpText());
+  });
+
   bot.on("text", async (ctx) => {
     const text = (ctx.message as { text?: string }).text ?? "";
     if (text.startsWith("/")) {
@@ -924,7 +1079,7 @@ export async function startTelegramBot(): Promise<void> {
     { command: "cron", description: "Manage scheduled prompts" },
     { command: "status", description: "Admin bot status" },
     { command: "restart", description: "Admin restart bot" },
-    { command: "h", description: "Alias: help" },
+    { command: "h", description: "Alias: history" },
     { command: "n", description: "Alias: new" },
     { command: "s", description: "Alias: session" },
     { command: "w", description: "Alias: where" },
