@@ -156,12 +156,17 @@
 
     .composer {
       display: grid;
-      grid-template-columns: auto 1fr auto;
+      grid-template-columns: minmax(130px, 180px) minmax(0, 1fr) auto;
       gap: 8px;
       padding: 12px;
       border-top: 1px solid var(--line);
       background: #fff;
       align-items: end;
+    }
+
+    #fileInput {
+      width: 100%;
+      min-width: 0;
     }
 
     input,
@@ -308,10 +313,23 @@
       }
 
       .composer {
-        grid-template-columns: auto 1fr auto;
+        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-areas:
+          "file file"
+          "message send";
       }
 
-      .composer button {
+      #fileInput {
+        grid-area: file;
+      }
+
+      #message {
+        grid-area: message;
+        min-width: 0;
+      }
+
+      .composer > button[type="submit"] {
+        grid-area: send;
         width: auto;
       }
 
@@ -649,6 +667,32 @@ ${row.error}` : '']
       return data;
     }
 
+    async function waitForChatJob(jobId, slotAtSend) {
+      const startedAt = Date.now();
+      while (true) {
+        const data = await api(`/api/chat-job?id=${encodeURIComponent(jobId)}`, {
+          method: 'GET',
+          headers: {}
+        });
+
+        if (data.done) {
+          if (!data.success) {
+            throw new Error(data.error || 'job failed');
+          }
+          return data.result;
+        }
+
+        if (Date.now() - startedAt > 1000 * 60 * 35) {
+          throw new Error('job polling timeout');
+        }
+
+        if (slotAtSend === currentSlot) {
+          setStatus(`slot=${slotAtSend} | waiting...`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1200));
+      }
+    }
+
     async function switchSession(slot) {
       try {
         await sendMessage(`/session ${slot}`, { adoptCurrent: true });
@@ -866,8 +910,15 @@ ${row.error}` : '']
           method: 'POST',
           body: JSON.stringify(payload)
         });
-        applyState(data, { adoptCurrent: currentSlot === slotAtSend });
-        updateBubble(pending, { text: data.reply, type: 'bot' });
+
+        if (data.queued && data.jobId) {
+          const finalResult = await waitForChatJob(data.jobId, slotAtSend);
+          applyState(finalResult, { adoptCurrent: currentSlot === slotAtSend });
+          updateBubble(pending, { text: finalResult.reply, type: 'bot' });
+        } else {
+          applyState(data, { adoptCurrent: currentSlot === slotAtSend });
+          updateBubble(pending, { text: data.reply, type: 'bot' });
+        }
       } catch (err) {
         updateBubble(pending, { text: String(err), type: 'err' });
       } finally {

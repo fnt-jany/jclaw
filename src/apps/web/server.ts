@@ -55,6 +55,19 @@ type WebAuthSession = {
   expiresAt: number;
 };
 
+type ChatJobRecord = {
+  id: string;
+  createdAt: number;
+  updatedAt: number;
+  status: "pending" | "running" | "completed" | "failed";
+  chatId: string;
+  sessionSlot: string;
+  sessionName: string;
+  logEnabled: boolean;
+  result: CommandResult | null;
+  error: string | null;
+};
+
 const WEB_CHAT_ID = process.env.WEB_CHAT_ID?.trim() || defaultChatId();
 const WEB_AUTH_COOKIE = "jclaw_web_auth";
 const WEB_SESSION_TTL_MS = 1000 * 60 * 60 * 12;
@@ -80,6 +93,8 @@ const WEB_ALLOWED_EMAILS = new Set(
     .filter(Boolean)
 );
 const webAuthSessions = new Map<string, WebAuthSession>();
+const chatJobs = new Map<string, ChatJobRecord>();
+const CHAT_JOB_MAX = 300;
 let devPasswordFailedAttempts = 0;
 let devPasswordLocked = false;
 
@@ -249,6 +264,54 @@ async function verifyGoogleIdToken(idToken: string): Promise<string | null> {
   }
 
   return email;
+}
+
+
+function pruneChatJobs(): void {
+  if (chatJobs.size <= CHAT_JOB_MAX) {
+    return;
+  }
+
+  const rows = Array.from(chatJobs.values()).sort((a, b) => a.updatedAt - b.updatedAt);
+  const removeCount = chatJobs.size - CHAT_JOB_MAX;
+  for (let i = 0; i < removeCount; i += 1) {
+    chatJobs.delete(rows[i].id);
+  }
+}
+
+function createChatJob(chatId: string, session: Session): ChatJobRecord {
+  const id = `job_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
+  const now = Date.now();
+  const record: ChatJobRecord = {
+    id,
+    createdAt: now,
+    updatedAt: now,
+    status: "pending",
+    chatId,
+    sessionSlot: session.shortId,
+    sessionName: session.id,
+    logEnabled: interactionLogger.isEnabled(),
+    result: null,
+    error: null
+  };
+  chatJobs.set(id, record);
+  pruneChatJobs();
+  return record;
+}
+
+function completeChatJob(job: ChatJobRecord, result: CommandResult): void {
+  job.result = result;
+  job.logEnabled = result.logEnabled;
+  job.sessionSlot = result.sessionSlot;
+  job.sessionName = result.sessionName;
+  job.status = "completed";
+  job.updatedAt = Date.now();
+}
+
+function failChatJob(job: ChatJobRecord, err: unknown): void {
+  job.error = String(err);
+  job.status = "failed";
+  job.updatedAt = Date.now();
 }
 
 
@@ -927,11 +990,73 @@ async function handleApiChat(req: IncomingMessage, res: ServerResponse): Promise
       return;
     }
 
-    const result = await runPrompt(chatId, session, normalized);
-    json(res, 200, result);
+    const job = createChatJob(chatId, session);
+    json(res, 202, {
+      queued: true,
+      jobId: job.id,
+      sessionSlot: session.shortId,
+      sessionName: session.id,
+      logEnabled: interactionLogger.isEnabled()
+    });
+
+    void (async () => {
+      job.status = "running";
+      job.updatedAt = Date.now();
+      try {
+        const result = await runPrompt(chatId, session, normalized);
+        completeChatJob(job, result);
+      } catch (err) {
+        failChatJob(job, err);
+      }
+    })();
   } catch (err) {
     json(res, 500, { error: String(err) });
   }
+}
+
+async function handleApiChatJob(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = requireAuth(req, res);
+  if (!auth) {
+    return;
+  }
+
+  const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
+  const jobId = (url.searchParams.get("id") ?? "").trim();
+  if (!jobId) {
+    json(res, 400, { error: "id is required" });
+    return;
+  }
+
+  const job = chatJobs.get(jobId);
+  if (!job) {
+    json(res, 404, { error: "job not found" });
+    return;
+  }
+
+  if (job.status === "completed" && job.result) {
+    json(res, 200, {
+      done: true,
+      success: true,
+      result: job.result
+    });
+    return;
+  }
+
+  if (job.status === "failed") {
+    json(res, 200, {
+      done: true,
+      success: false,
+      error: job.error ?? "job failed"
+    });
+    return;
+  }
+
+  json(res, 200, {
+    done: false,
+    status: job.status,
+    sessionSlot: job.sessionSlot,
+    sessionName: job.sessionName
+  });
 }
 
 async function handleApiState(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -1193,6 +1318,11 @@ export async function startWebServer(): Promise<void> {
       return;
     }
 
+    if (req.method === "GET" && pathname === "/api/chat-job") {
+      await handleApiChatJob(req, res);
+      return;
+    }
+
     if (req.method === "GET") {
       await handleStatic(req, res);
       return;
@@ -1209,7 +1339,3 @@ export async function startWebServer(): Promise<void> {
 if (require.main === module) {
   void startWebServer();
 }
-
-
-
-
