@@ -93,7 +93,8 @@ export async function startCliOneShot(): Promise<void> {
     codexSessionId: session.codexSessionId,
     timeoutMs: config.codexTimeoutMs,
     workdir: config.codexWorkdir,
-    codexNodeOptions: config.codexNodeOptions
+    codexNodeOptions: config.codexNodeOptions,
+      reasoningEffort: store.getReasoningEffort(session.id)
   });
 
   if (result.codexSessionId && result.codexSessionId !== session.codexSessionId) {

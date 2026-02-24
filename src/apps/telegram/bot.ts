@@ -363,6 +363,7 @@ function attachHandlers(bot: Telegraf, resolvedCodexCommand: string): void {
           timeoutMs: config.codexTimeoutMs,
           workdir: config.codexWorkdir,
           codexNodeOptions: config.codexNodeOptions,
+      reasoningEffort: store.getReasoningEffort(session.id),
           onStdoutChunk: onChunk,
           onStderrChunk: onChunk
         });
@@ -434,6 +435,7 @@ function attachHandlers(bot: Telegraf, resolvedCodexCommand: string): void {
       "/cron ... (/c) - schedule prompts",
       "/slot <list|show|bind> (/t) - manage slot-codex mapping",
       "/plan <on|off|status> (/p) - toggle plan mode",
+      "/reason <none|low|medium|high|status> - set reasoning effort per session",
       "/status (/a) - bot status (admin)",
       "/restart (/r) - bot restart (admin)",
       "Plain text is treated as execution prompt",
@@ -702,6 +704,32 @@ function attachHandlers(bot: Telegraf, resolvedCodexCommand: string): void {
     }
 
     await ctx.reply("Usage: /plan <on|off|status>");
+  });
+
+
+  bot.command("reason", async (ctx) => {
+    const chatId = chatIdOf(ctx);
+    if (!chatId || !isAllowed(chatId)) {
+      await ctx.reply("Access denied.");
+      return;
+    }
+
+    const parts = (ctx.message as { text?: string }).text?.split(" ").filter(Boolean) ?? [];
+    const mode = (parts[1] ?? "status").toLowerCase();
+    const current = store.getOrCreateSessionByChat(chatId, "telegram");
+
+    if (mode === "status") {
+      await ctx.reply(`Reasoning effort (${current.shortId}): ${store.getReasoningEffort(current.id).toUpperCase()}`);
+      return;
+    }
+
+    if (mode === "none" || mode === "low" || mode === "medium" || mode === "high") {
+      const next = store.setReasoningEffort(current.id, mode);
+      await ctx.reply(`Reasoning effort (${current.shortId}): ${next.toUpperCase()}`);
+      return;
+    }
+
+    await ctx.reply("Usage: /reason <none|low|medium|high|status>");
   });
 
   bot.command("slot", async (ctx) => {
@@ -1075,6 +1103,7 @@ export async function startTelegramBot(): Promise<void> {
     { command: "whoami", description: "Show your chat id" },
     { command: "log", description: "Toggle interaction logging" },
     { command: "plan", description: "Toggle plan mode" },
+    { command: "reason", description: "Set reasoning effort" },
     { command: "slot", description: "Manage slot bindings" },
     { command: "cron", description: "Manage scheduled prompts" },
     { command: "status", description: "Admin bot status" },

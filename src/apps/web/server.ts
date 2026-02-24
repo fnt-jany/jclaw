@@ -14,6 +14,7 @@ import { buildOneShotCron } from "../../core/cron/oneshot";
 import { parseArgs } from "../../core/commands/args";
 import { DEFAULT_LOCAL_CHAT_ID, LOG_COMMAND, SLOT_TARGET_HINT, TEXT } from "../../shared/constants";
 import { CommandResult, sessionSummary } from "../../shared/types";
+import { ChatJobStore, ChatJobRecord } from "../../core/chat/jobStore";
 
 dotenv.config({ quiet: true });
 
@@ -23,6 +24,7 @@ const interactionLogPath = path.join(dataDir, "interactions.json");
 const store = new SessionStore(config.dbFile);
 const interactionLogger = new InteractionLogger(interactionLogPath);
 const cronStore = new CronStore(config.dbFile);
+const chatJobStore = new ChatJobStore(config.dbFile);
 const sessionLocks = new Set<string>();
 
 let codexCommandResolved = "";
@@ -55,19 +57,6 @@ type WebAuthSession = {
   expiresAt: number;
 };
 
-type ChatJobRecord = {
-  id: string;
-  createdAt: number;
-  updatedAt: number;
-  status: "pending" | "running" | "completed" | "failed";
-  chatId: string;
-  sessionSlot: string;
-  sessionName: string;
-  logEnabled: boolean;
-  result: CommandResult | null;
-  error: string | null;
-};
-
 const WEB_CHAT_ID = process.env.WEB_CHAT_ID?.trim() || defaultChatId();
 const WEB_AUTH_COOKIE = "jclaw_web_auth";
 const WEB_SESSION_TTL_MS = 1000 * 60 * 60 * 12;
@@ -93,8 +82,11 @@ const WEB_ALLOWED_EMAILS = new Set(
     .filter(Boolean)
 );
 const webAuthSessions = new Map<string, WebAuthSession>();
-const chatJobs = new Map<string, ChatJobRecord>();
-const CHAT_JOB_MAX = 300;
+const chatJobSubscribers = new Map<string, Set<ServerResponse>>();
+const CHAT_JOB_MAX = Math.max(200, Number(process.env.WEB_CHAT_JOB_MAX ?? "2000") || 2000);
+const CHAT_JOB_WORKERS = Math.max(1, Number(process.env.WEB_CHAT_JOB_WORKERS ?? "1") || 1);
+const CHAT_SSE_HEARTBEAT_MS = Math.max(10000, Number(process.env.WEB_CHAT_SSE_HEARTBEAT_MS ?? "15000") || 15000);
+let activeJobWorkers = 0;
 let devPasswordFailedAttempts = 0;
 let devPasswordLocked = false;
 
@@ -268,52 +260,121 @@ async function verifyGoogleIdToken(idToken: string): Promise<string | null> {
 
 
 function pruneChatJobs(): void {
-  if (chatJobs.size <= CHAT_JOB_MAX) {
+  chatJobStore.prune(CHAT_JOB_MAX);
+}
+
+function subscribeChatJob(jobId: string, res: ServerResponse): void {
+  const set = chatJobSubscribers.get(jobId) ?? new Set<ServerResponse>();
+  set.add(res);
+  chatJobSubscribers.set(jobId, set);
+
+  res.on("close", () => {
+    const current = chatJobSubscribers.get(jobId);
+    if (!current) {
+      return;
+    }
+    current.delete(res);
+    if (current.size === 0) {
+      chatJobSubscribers.delete(jobId);
+    }
+  });
+}
+
+function emitSse(res: ServerResponse, event: string, payload: unknown): void {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
+function notifyChatJob(job: ChatJobRecord): void {
+  const subs = chatJobSubscribers.get(job.id);
+  if (!subs || subs.size === 0) {
     return;
   }
 
-  const rows = Array.from(chatJobs.values()).sort((a, b) => a.updatedAt - b.updatedAt);
-  const removeCount = chatJobs.size - CHAT_JOB_MAX;
-  for (let i = 0; i < removeCount; i += 1) {
-    chatJobs.delete(rows[i].id);
+  const base = {
+    id: job.id,
+    status: job.status,
+    sessionSlot: job.sessionSlot,
+    sessionName: job.result?.sessionName ?? job.sessionId,
+    updatedAt: job.updatedAt
+  };
+
+  if (job.status === "completed" && job.result) {
+    for (const res of subs) {
+      emitSse(res, "done", {
+        ...base,
+        done: true,
+        success: true,
+        result: job.result
+      });
+      res.end();
+    }
+    chatJobSubscribers.delete(job.id);
+    return;
+  }
+
+  if (job.status === "failed") {
+    for (const res of subs) {
+      emitSse(res, "done", {
+        ...base,
+        done: true,
+        success: false,
+        error: job.error ?? "job failed"
+      });
+      res.end();
+    }
+    chatJobSubscribers.delete(job.id);
+    return;
+  }
+
+  for (const res of subs) {
+    emitSse(res, "update", {
+      ...base,
+      done: false
+    });
   }
 }
 
-function createChatJob(chatId: string, session: Session): ChatJobRecord {
-  const id = `job_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
-  const now = Date.now();
-  const record: ChatJobRecord = {
-    id,
-    createdAt: now,
-    updatedAt: now,
-    status: "pending",
-    chatId,
-    sessionSlot: session.shortId,
-    sessionName: session.id,
-    logEnabled: interactionLogger.isEnabled(),
-    result: null,
-    error: null
-  };
-  chatJobs.set(id, record);
-  pruneChatJobs();
-  return record;
-}
+function scheduleChatWorkers(): void {
+  while (activeJobWorkers < CHAT_JOB_WORKERS) {
+    const job = chatJobStore.claimNextPending();
+    if (!job) {
+      return;
+    }
+    activeJobWorkers += 1;
+    notifyChatJob(job);
 
-function completeChatJob(job: ChatJobRecord, result: CommandResult): void {
-  job.result = result;
-  job.logEnabled = result.logEnabled;
-  job.sessionSlot = result.sessionSlot;
-  job.sessionName = result.sessionName;
-  job.status = "completed";
-  job.updatedAt = Date.now();
-}
+    void (async () => {
+      try {
+        const session = store.getSession(job.sessionId);
+        if (!session) {
+          const failed = chatJobStore.markFailed(job.id, `Session not found: ${job.sessionId}`);
+          if (failed) {
+            notifyChatJob(failed);
+            pruneChatJobs();
+          }
+          return;
+        }
 
-function failChatJob(job: ChatJobRecord, err: unknown): void {
-  job.error = String(err);
-  job.status = "failed";
-  job.updatedAt = Date.now();
+        const result = await runPrompt(job.chatId, session, job.prompt);
+        const completed = chatJobStore.markCompleted(job.id, result);
+        if (completed) {
+          notifyChatJob(completed);
+          pruneChatJobs();
+        }
+      } catch (err) {
+        const failed = chatJobStore.markFailed(job.id, String(err));
+        if (failed) {
+          notifyChatJob(failed);
+          pruneChatJobs();
+        }
+      } finally {
+        activeJobWorkers -= 1;
+        scheduleChatWorkers();
+      }
+    })();
+  }
 }
-
 
 function json(res: ServerResponse, status: number, payload: unknown): void {
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
@@ -630,12 +691,13 @@ async function runPrompt(chatId: string, session: Session, prompt: string): Prom
     const result = await runCodex({
       codexCommand: codexCommandResolved,
       codexArgsTemplate: config.codexArgsTemplate,
-      prompt,
+      prompt: effectivePrompt,
       sessionId: session.id,
       codexSessionId: session.codexSessionId,
       timeoutMs: config.codexTimeoutMs,
       workdir: config.codexWorkdir,
-      codexNodeOptions: config.codexNodeOptions
+      codexNodeOptions: config.codexNodeOptions,
+      reasoningEffort: store.getReasoningEffort(session.id)
     });
 
     if (result.codexSessionId && result.codexSessionId !== session.codexSessionId) {
@@ -691,6 +753,7 @@ async function handleCommand(chatId: string, session: Session, cmdLine: string):
         "/whoami",
         LOG_COMMAND,
         "/plan <on|off|status>",
+        "/reason <none|low|medium|high|status>",
         "/cron ...",
         "/slot <list|show|bind>"
       ].join("\n"),
@@ -828,6 +891,36 @@ async function handleCommand(chatId: string, session: Session, cmdLine: string):
     }
     return {
       reply: "Usage: /plan <on|off|status>",
+      sessionSlot: session.shortId,
+      sessionName: session.id,
+      logEnabled: interactionLogger.isEnabled()
+    };
+  }
+
+
+  if (cmd === "/reason") {
+    const mode = (parts[1] ?? "status").toLowerCase();
+    if (mode === "status") {
+      return {
+        reply: `Reasoning effort: ${store.getReasoningEffort(session.id).toUpperCase()}`,
+        sessionSlot: session.shortId,
+        sessionName: session.id,
+        logEnabled: interactionLogger.isEnabled()
+      };
+    }
+
+    if (mode === "none" || mode === "low" || mode === "medium" || mode === "high") {
+      const next = store.setReasoningEffort(session.id, mode);
+      return {
+        reply: `Reasoning effort: ${next.toUpperCase()}`,
+        sessionSlot: session.shortId,
+        sessionName: session.id,
+        logEnabled: interactionLogger.isEnabled()
+      };
+    }
+
+    return {
+      reply: "Usage: /reason <none|low|medium|high|status>",
       sessionSlot: session.shortId,
       sessionName: session.id,
       logEnabled: interactionLogger.isEnabled()
@@ -990,7 +1083,13 @@ async function handleApiChat(req: IncomingMessage, res: ServerResponse): Promise
       return;
     }
 
-    const job = createChatJob(chatId, session);
+    const job = chatJobStore.createPending({
+      chatId,
+      sessionId: session.id,
+      sessionSlot: session.shortId,
+      prompt: normalized
+    });
+    pruneChatJobs();
     json(res, 202, {
       queued: true,
       jobId: job.id,
@@ -998,17 +1097,7 @@ async function handleApiChat(req: IncomingMessage, res: ServerResponse): Promise
       sessionName: session.id,
       logEnabled: interactionLogger.isEnabled()
     });
-
-    void (async () => {
-      job.status = "running";
-      job.updatedAt = Date.now();
-      try {
-        const result = await runPrompt(chatId, session, normalized);
-        completeChatJob(job, result);
-      } catch (err) {
-        failChatJob(job, err);
-      }
-    })();
+    scheduleChatWorkers();
   } catch (err) {
     json(res, 500, { error: String(err) });
   }
@@ -1027,9 +1116,13 @@ async function handleApiChatJob(req: IncomingMessage, res: ServerResponse): Prom
     return;
   }
 
-  const job = chatJobs.get(jobId);
+  const job = chatJobStore.get(jobId);
   if (!job) {
     json(res, 404, { error: "job not found" });
+    return;
+  }
+  if (job.chatId !== WEB_CHAT_ID) {
+    json(res, 403, { error: "Access denied" });
     return;
   }
 
@@ -1055,7 +1148,85 @@ async function handleApiChatJob(req: IncomingMessage, res: ServerResponse): Prom
     done: false,
     status: job.status,
     sessionSlot: job.sessionSlot,
-    sessionName: job.sessionName
+    sessionName: job.sessionId
+  });
+}
+
+async function handleApiChatJobs(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = requireAuth(req, res);
+  if (!auth) {
+    return;
+  }
+
+  const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
+  const slot = (url.searchParams.get("slot") ?? "").trim().toUpperCase();
+  const chatId = WEB_CHAT_ID;
+
+  if (!slot) {
+    json(res, 400, { error: "slot is required" });
+    return;
+  }
+
+  if (!ensureAllowed(chatId)) {
+    json(res, 403, { error: "Access denied" });
+    return;
+  }
+
+  const items = chatJobStore.listRecentBySlot(chatId, slot, 30);
+  json(res, 200, { items });
+}
+
+async function handleApiChatStream(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = requireAuth(req, res);
+  if (!auth) {
+    return;
+  }
+
+  const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
+  const jobId = (url.searchParams.get("jobId") ?? "").trim();
+  if (!jobId) {
+    json(res, 400, { error: "jobId is required" });
+    return;
+  }
+
+  const job = chatJobStore.get(jobId);
+  if (!job) {
+    json(res, 404, { error: "job not found" });
+    return;
+  }
+  if (job.chatId !== WEB_CHAT_ID) {
+    json(res, 403, { error: "Access denied" });
+    return;
+  }
+
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive"
+  });
+
+  subscribeChatJob(jobId, res);
+
+  emitSse(res, "connected", {
+    id: job.id,
+    status: job.status,
+    sessionSlot: job.sessionSlot,
+    sessionName: job.result?.sessionName ?? job.sessionId,
+    updatedAt: job.updatedAt
+  });
+
+  notifyChatJob(job);
+
+  if (job.status === "completed" || job.status === "failed") {
+    return;
+  }
+
+  const heartbeat = setInterval(() => {
+    res.write(": keepalive\n\n");
+  }, CHAT_SSE_HEARTBEAT_MS);
+
+  res.on("close", () => {
+    clearInterval(heartbeat);
   });
 }
 
@@ -1259,9 +1430,12 @@ export async function startWebServer(): Promise<void> {
   await store.init();
   await interactionLogger.init();
   await cronStore.init();
+  await chatJobStore.init();
 
   const resolved = await resolveCodexCommand(config.codexCommand);
   codexCommandResolved = resolved.command;
+
+  scheduleChatWorkers();
 
   const server = createServer(async (req, res) => {
     if (!req.url || !req.method) {
@@ -1320,6 +1494,16 @@ export async function startWebServer(): Promise<void> {
 
     if (req.method === "GET" && pathname === "/api/chat-job") {
       await handleApiChatJob(req, res);
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/api/chat/jobs") {
+      await handleApiChatJobs(req, res);
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/api/chat/stream") {
+      await handleApiChatStream(req, res);
       return;
     }
 

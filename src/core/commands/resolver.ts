@@ -1,4 +1,4 @@
-﻿import { access, readdir } from "node:fs/promises";
+﻿import { access, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { constants } from "node:fs";
 import { spawn } from "node:child_process";
@@ -56,13 +56,26 @@ async function findFromVsCodeExtensions(): Promise<string | null> {
     .filter((d) => d.isDirectory() && d.name.startsWith("openai.chatgpt-") && d.name.endsWith("-win32-x64"))
     .map((d) => path.join(base, d.name, "bin", "windows-x86_64", "codex.exe"));
 
+  const existing: Array<{ candidate: string; mtimeMs: number }> = [];
   for (const candidate of matches) {
-    if (await fileExists(candidate)) {
-      return candidate;
+    if (!(await fileExists(candidate))) {
+      continue;
+    }
+
+    try {
+      const info = await stat(candidate);
+      existing.push({ candidate, mtimeMs: info.mtimeMs });
+    } catch {
+      existing.push({ candidate, mtimeMs: 0 });
     }
   }
 
-  return null;
+  if (existing.length === 0) {
+    return null;
+  }
+
+  existing.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return existing[0].candidate;
 }
 
 export async function resolveCodexCommand(input: string): Promise<{ command: string; source: string }> {

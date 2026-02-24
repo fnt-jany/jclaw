@@ -105,7 +105,8 @@ async function executeJob(jobId: string): Promise<void> {
       codexSessionId: session.codexSessionId,
       timeoutMs: config.codexTimeoutMs,
       workdir: config.codexWorkdir,
-      codexNodeOptions: config.codexNodeOptions
+      codexNodeOptions: config.codexNodeOptions,
+      reasoningEffort: sessionStore.getReasoningEffort(session.id)
     });
 
     if (result.codexSessionId && result.codexSessionId !== session.codexSessionId) {

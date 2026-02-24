@@ -24,6 +24,7 @@ export type Session = {
 };
 
 export type ActiveSessionChannel = "telegram" | "web" | "cli" | "shared";
+export type ReasoningEffort = "none" | "low" | "medium" | "high";
 
 const DEFAULT_ACTIVE_CHANNEL: ActiveSessionChannel = "shared";
 
@@ -316,6 +317,30 @@ export class SessionStore {
       )
       .run(sessionId, enabled ? 1 : 0);
     return this.getPlanMode(sessionId);
+  }
+
+  getReasoningEffort(sessionId: string): ReasoningEffort {
+    const row = this.db
+      .prepare("SELECT reasoning_effort FROM session_preferences WHERE session_id = ?")
+      .get(sessionId) as { reasoning_effort: string } | undefined;
+
+    const value = (row?.reasoning_effort ?? "none").toLowerCase();
+    if (value === "low" || value === "medium" || value === "high") {
+      return value;
+    }
+    return "none";
+  }
+
+  setReasoningEffort(sessionId: string, effort: ReasoningEffort): ReasoningEffort {
+    this.db
+      .prepare(
+        `INSERT INTO session_preferences(session_id, reasoning_effort)
+         VALUES (?, ?)
+         ON CONFLICT(session_id) DO UPDATE SET reasoning_effort = excluded.reasoning_effort`
+      )
+      .run(sessionId, effort);
+
+    return this.getReasoningEffort(sessionId);
   }
 
   appendRun(sessionId: string, run: RunRecord): Session {

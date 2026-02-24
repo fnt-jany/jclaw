@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { parseArgsStringToArgv } from "string-argv";
+import type { ReasoningEffort } from "../session/sessionStore";
 
 export type RunInput = {
   codexNodeOptions: string;
@@ -10,6 +11,7 @@ export type RunInput = {
   codexSessionId: string | null;
   timeoutMs: number;
   workdir: string;
+  reasoningEffort?: ReasoningEffort;
   onStdoutChunk?: (chunk: string) => void;
   onStderrChunk?: (chunk: string) => void;
 };
@@ -29,6 +31,10 @@ function extractCodexSessionId(stdout: string, stderr: string): string | null {
 }
 
 function buildArgs(input: RunInput): string[] {
+  const reasoningArgs =
+    input.reasoningEffort && input.reasoningEffort !== "none"
+      ? ["-c", `model_reasoning_effort="${input.reasoningEffort}"`]
+      : [];
   const argsString = input.codexArgsTemplate
     .replaceAll("{prompt}", input.prompt)
     .replaceAll("{session_id}", input.sessionId)
@@ -40,7 +46,11 @@ function buildArgs(input: RunInput): string[] {
     // Derive resume options from the raw template so prompt text is never mistaken as an option value.
     const templateTokens = parseArgsStringToArgv(input.codexArgsTemplate).slice(1);
     const options = templateTokens.filter((token) => token.startsWith("-"));
-    return ["exec", "resume", ...options, input.codexSessionId, input.prompt];
+    return ["exec", "resume", ...options, ...reasoningArgs, input.codexSessionId, input.prompt];
+  }
+
+  if (parsed[0] === "exec" && reasoningArgs.length > 0) {
+    return [parsed[0], ...reasoningArgs, ...parsed.slice(1)];
   }
 
   return parsed;

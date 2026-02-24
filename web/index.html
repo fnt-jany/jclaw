@@ -441,6 +441,9 @@
     const hydratedSlots = new Set();
     const hydratingSlots = new Map();
     const sessionInputState = new Map();
+    const activeJobStreams = new Map();
+    const pendingBubbleByJob = new Map();
+    const syncingPendingSlots = new Set();
 
 
     function sessionKey(slot) {
@@ -632,6 +635,7 @@ ${row.error}` : '']
       renderCurrentLog();
       applyInputState(statusSlot);
       void ensureSessionHydrated(statusSlot);
+      void syncPendingJobsForSlot(statusSlot);
     }
 
     async function fetchState() {
@@ -667,29 +671,174 @@ ${row.error}` : '']
       return data;
     }
 
-    async function waitForChatJob(jobId, slotAtSend) {
-      const startedAt = Date.now();
+    async function waitForChatJobFallback(jobId, slotAtSend, startedAt) {
       while (true) {
-        const data = await api(`/api/chat-job?id=${encodeURIComponent(jobId)}`, {
-          method: 'GET',
-          headers: {}
-        });
+        try {
+          const data = await api(`/api/chat-job?id=${encodeURIComponent(jobId)}`, {
+            method: 'GET',
+            headers: {}
+          });
 
-        if (data.done) {
-          if (!data.success) {
-            throw new Error(data.error || 'job failed');
+          if (data.done) {
+            if (!data.success) {
+              throw new Error(data.error || 'job failed');
+            }
+            return data.result;
           }
-          return data.result;
+        } catch (err) {
+          if (Date.now() - startedAt >= 1000 * 60 * 35) {
+            throw err;
+          }
         }
 
-        if (Date.now() - startedAt > 1000 * 60 * 35) {
+        if (Date.now() - startedAt >= 1000 * 60 * 35) {
           throw new Error('job polling timeout');
         }
 
         if (slotAtSend === currentSlot) {
-          setStatus(`slot=${slotAtSend} | waiting...`);
+          setStatus(`slot=${slotAtSend} | reconnecting...`);
         }
         await new Promise((resolve) => setTimeout(resolve, 1200));
+      }
+    }
+
+    function waitForChatJobSse(jobId, slotAtSend) {
+      return new Promise((resolve, reject) => {
+        if (activeJobStreams.has(jobId)) {
+          activeJobStreams.get(jobId).close();
+          activeJobStreams.delete(jobId);
+        }
+
+        const stream = new EventSource(apiUrl(`/api/chat/stream?jobId=${encodeURIComponent(jobId)}`), {
+          withCredentials: true
+        });
+        activeJobStreams.set(jobId, stream);
+
+        const startedAt = Date.now();
+        let settled = false;
+        let streamClosed = false;
+
+        const timeout = setTimeout(() => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          closeStream();
+          reject(new Error('job stream timeout'));
+        }, 1000 * 60 * 35);
+
+        function closeStream() {
+          if (streamClosed) {
+            return;
+          }
+          streamClosed = true;
+          clearTimeout(timeout);
+          stream.close();
+          activeJobStreams.delete(jobId);
+        }
+
+        function resolveOnce(value) {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          closeStream();
+          resolve(value);
+        }
+
+        function rejectOnce(err) {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          closeStream();
+          reject(err);
+        }
+
+        stream.addEventListener('connected', () => {
+          if (slotAtSend === currentSlot) {
+            setStatus(`slot=${slotAtSend} | waiting...`);
+          }
+        });
+
+        stream.addEventListener('update', () => {
+          if (slotAtSend === currentSlot) {
+            setStatus(`slot=${slotAtSend} | waiting...`);
+          }
+        });
+
+        stream.addEventListener('done', (event) => {
+          try {
+            const payload = JSON.parse(event.data || '{}');
+            if (payload.success) {
+              resolveOnce(payload.result);
+              return;
+            }
+            rejectOnce(new Error(payload.error || 'job failed'));
+          } catch (err) {
+            rejectOnce(err);
+          }
+        });
+
+        stream.onerror = () => {
+          if (settled) {
+            return;
+          }
+
+          closeStream();
+          void (async () => {
+            try {
+              const result = await waitForChatJobFallback(jobId, slotAtSend, startedAt);
+              resolveOnce(result);
+            } catch (err) {
+              rejectOnce(err instanceof Error ? err : new Error(String(err)));
+            }
+          })();
+        };
+      });
+    }
+
+    async function syncPendingJobsForSlot(slot) {
+      if (!slot || syncingPendingSlots.has(slot)) {
+        return;
+      }
+
+      syncingPendingSlots.add(slot);
+      try {
+        const data = await api(`/api/chat/jobs?slot=${encodeURIComponent(slot)}`, {
+          method: 'GET',
+          headers: {}
+        });
+        const rows = Array.isArray(data.items) ? data.items : [];
+        for (const row of rows) {
+          if (!row || !row.id) {
+            continue;
+          }
+          if (row.status !== 'pending' && row.status !== 'running') {
+            continue;
+          }
+          if (pendingBubbleByJob.has(row.id)) {
+            continue;
+          }
+          const pending = appendBubble('processing...', 'bot', slot);
+          pendingBubbleByJob.set(row.id, pending);
+          void watchChatJob(row.id, slot, pending);
+        }
+      } catch {
+      } finally {
+        syncingPendingSlots.delete(slot);
+      }
+    }
+
+    async function watchChatJob(jobId, slotAtSend, pendingBubble) {
+      try {
+        const finalResult = await waitForChatJobSse(jobId, slotAtSend);
+        applyState(finalResult, { adoptCurrent: currentSlot === slotAtSend });
+        updateBubble(pendingBubble, { text: finalResult.reply, type: 'bot' });
+      } catch (err) {
+        updateBubble(pendingBubble, { text: String(err), type: 'err' });
+      } finally {
+        pendingBubbleByJob.delete(jobId);
       }
     }
 
@@ -797,6 +946,7 @@ ${row.error}` : '']
     });
 
     logoutBtnEl.addEventListener('click', async () => {
+      closeAllJobStreams();
       try {
         await api('/api/auth/logout', { method: 'POST', body: '{}' });
       } catch {
@@ -912,9 +1062,8 @@ ${row.error}` : '']
         });
 
         if (data.queued && data.jobId) {
-          const finalResult = await waitForChatJob(data.jobId, slotAtSend);
-          applyState(finalResult, { adoptCurrent: currentSlot === slotAtSend });
-          updateBubble(pending, { text: finalResult.reply, type: 'bot' });
+          pendingBubbleByJob.set(data.jobId, pending);
+          await watchChatJob(data.jobId, slotAtSend, pending);
         } else {
           applyState(data, { adoptCurrent: currentSlot === slotAtSend });
           updateBubble(pending, { text: data.reply, type: 'bot' });
@@ -926,6 +1075,13 @@ ${row.error}` : '']
       }
     });
 
+    function closeAllJobStreams() {
+      for (const stream of activeJobStreams.values()) {
+        stream.close();
+      }
+      activeJobStreams.clear();
+    }
+
     async function bootstrapApp() {
       try {
         await fetchState();
@@ -934,6 +1090,10 @@ ${row.error}` : '']
         showAuth(String(err));
       }
     }
+
+    window.addEventListener('beforeunload', () => {
+      closeAllJobStreams();
+    });
 
     async function ensureAuth() {
       try {

@@ -68,6 +68,21 @@ function ensureCronJobsTable(db: Database.Database): void {
   `);
 }
 
+
+function ensureSessionPreferencesTable(db: Database.Database): void {
+  const columns = db
+    .prepare("PRAGMA table_info(session_preferences)")
+    .all() as Array<{ name: string }>;
+  const hasReasoningEffort = columns.some((col) => col.name === "reasoning_effort");
+  if (hasReasoningEffort) {
+    return;
+  }
+
+  db.exec(`
+    ALTER TABLE session_preferences ADD COLUMN reasoning_effort TEXT NOT NULL DEFAULT 'none';
+  `);
+}
+
 function ensureSchema(db: Database.Database): void {
   db.pragma("journal_mode = WAL");
   db.pragma("busy_timeout = 5000");
@@ -121,7 +136,8 @@ function ensureSchema(db: Database.Database): void {
 
     CREATE TABLE IF NOT EXISTS session_preferences (
       session_id TEXT PRIMARY KEY,
-      plan_mode INTEGER NOT NULL DEFAULT 0
+      plan_mode INTEGER NOT NULL DEFAULT 0,
+      reasoning_effort TEXT NOT NULL DEFAULT 'none'
     );
 
     CREATE TABLE IF NOT EXISTS interaction_settings (
@@ -142,6 +158,30 @@ function ensureSchema(db: Database.Database): void {
       exit_code INTEGER,
       duration_ms INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS chat_jobs (
+      id TEXT PRIMARY KEY,
+      chat_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      session_slot TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      status TEXT NOT NULL,
+      result_reply TEXT,
+      result_session_slot TEXT,
+      result_session_name TEXT,
+      result_log_enabled INTEGER,
+      error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      started_at TEXT,
+      finished_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_jobs_status_created
+      ON chat_jobs(status, created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_chat_jobs_slot_updated
+      ON chat_jobs(chat_id, session_slot, updated_at);
 
     CREATE TABLE IF NOT EXISTS cron_jobs (
       id TEXT PRIMARY KEY,
@@ -166,6 +206,7 @@ function ensureSchema(db: Database.Database): void {
 
   ensureActiveSessionsTable(db);
   ensureCronJobsTable(db);
+  ensureSessionPreferencesTable(db);
 }
 
 export function openDb(dbFile: string): Database.Database {

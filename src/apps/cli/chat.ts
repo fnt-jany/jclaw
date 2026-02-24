@@ -52,6 +52,7 @@ function printHelp(): void {
       `/session <${SLOT_TARGET_HINT}>    Switch session`,
       `${LOG_COMMAND} Toggle interaction logging`,
       "/plan <on|off|status> Toggle plan mode",
+      "/reason <none|low|medium|high|status> Set reasoning effort",
       "/slot <list|show|bind> Manage slot-codex mapping",
       "/exit                Quit chat mode"
     ].join("\n") + "\n"
@@ -84,7 +85,8 @@ async function runPrompt(
     codexSessionId: session.codexSessionId,
     timeoutMs: config.codexTimeoutMs,
     workdir: config.codexWorkdir,
-    codexNodeOptions: config.codexNodeOptions
+    codexNodeOptions: config.codexNodeOptions,
+      reasoningEffort: store.getReasoningEffort(session.id)
   });
 
   if (result.codexSessionId && result.codexSessionId !== session.codexSessionId) {
@@ -245,6 +247,21 @@ export async function startCliChat(): Promise<void> {
           continue;
         }
         output.write("Usage: /plan <on|off|status>\n");
+        continue;
+      }
+
+      if (line.startsWith("/reason")) {
+        const arg = line.split(" ").filter(Boolean)[1]?.toLowerCase() ?? "status";
+        if (arg === "status") {
+          output.write(`Reasoning effort: ${store.getReasoningEffort(session.id).toUpperCase()}\n`);
+          continue;
+        }
+        if (arg === "none" || arg === "low" || arg === "medium" || arg === "high") {
+          const next = store.setReasoningEffort(session.id, arg);
+          output.write(`Reasoning effort: ${next.toUpperCase()}\n`);
+          continue;
+        }
+        output.write("Usage: /reason <none|low|medium|high|status>\n");
         continue;
       }
 
