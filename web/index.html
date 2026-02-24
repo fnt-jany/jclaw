@@ -434,6 +434,9 @@
     const SLOT_PAGE_STARTS = [0, 8, 16, 24];
     const HISTORY_LIMIT = 120;
     const API_BASE = String(window.JCLAW_API_BASE || '').replace(/\/$/, '');
+    const IS_MOBILE_KEYBOARD =
+      window.matchMedia('(pointer: coarse)').matches ||
+      /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
     let slotPageStart = 0;
     let currentSlot = '';
 
@@ -966,7 +969,10 @@ ${row.error}` : '']
     messageEl.addEventListener('keydown', (e) => {
       const state = getInputState();
 
-      if (e.key === 'Enter' && !e.shiftKey) {
+      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+        if (IS_MOBILE_KEYBOARD) {
+          return;
+        }
         e.preventDefault();
         composerEl.requestSubmit();
         return;
