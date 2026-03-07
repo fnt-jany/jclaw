@@ -3,8 +3,8 @@ module.exports = {
     {
       name: "jclaw-telegram",
       cwd: "C:/Project/jclaw",
-      script: "npm.cmd",
-      args: "run dev",
+      script: "node",
+      args: "dist/main/telegram.js",
       interpreter: "none",
       autorestart: true,
       watch: false,

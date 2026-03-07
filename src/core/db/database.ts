@@ -83,6 +83,58 @@ function ensureSessionPreferencesTable(db: Database.Database): void {
   `);
 }
 
+function ensureSessionPreferencesNickname(db: Database.Database): void {
+  const columns = db
+    .prepare("PRAGMA table_info(session_preferences)")
+    .all() as Array<{ name: string }>;
+  const hasNickname = columns.some((col) => col.name === "nickname");
+  if (hasNickname) {
+    return;
+  }
+
+  db.exec(`
+    ALTER TABLE session_preferences ADD COLUMN nickname TEXT NOT NULL DEFAULT '';
+  `);
+}
+
+function ensureSessionPreferencesModelOverride(db: Database.Database): void {
+  const columns = db
+    .prepare("PRAGMA table_info(session_preferences)")
+    .all() as Array<{ name: string }>;
+  const hasModelOverride = columns.some((col) => col.name === "model_override");
+  if (hasModelOverride) {
+    return;
+  }
+
+  db.exec(`
+    ALTER TABLE session_preferences ADD COLUMN model_override TEXT NOT NULL DEFAULT '';
+  `);
+}
+
+function ensureSessionsLlmColumns(db: Database.Database): void {
+  const columns = db
+    .prepare("PRAGMA table_info(sessions)")
+    .all() as Array<{ name: string }>;
+  const hasProvider = columns.some((col) => col.name === "llm_provider");
+  const hasThreadId = columns.some((col) => col.name === "llm_thread_id");
+
+  if (!hasProvider) {
+    db.exec("ALTER TABLE sessions ADD COLUMN llm_provider TEXT NOT NULL DEFAULT 'codex';");
+  }
+
+  if (!hasThreadId) {
+    db.exec("ALTER TABLE sessions ADD COLUMN llm_thread_id TEXT;");
+  }
+
+  db.exec(`
+    UPDATE sessions
+    SET llm_thread_id = codex_session_id
+    WHERE llm_thread_id IS NULL
+      AND codex_session_id IS NOT NULL;
+  `);
+}
+
+
 function ensureSchema(db: Database.Database): void {
   db.pragma("journal_mode = WAL");
   db.pragma("busy_timeout = 5000");
@@ -92,6 +144,8 @@ function ensureSchema(db: Database.Database): void {
       short_id TEXT NOT NULL,
       chat_id TEXT,
       codex_session_id TEXT,
+      llm_provider TEXT NOT NULL DEFAULT 'codex',
+      llm_thread_id TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -207,6 +261,9 @@ function ensureSchema(db: Database.Database): void {
   ensureActiveSessionsTable(db);
   ensureCronJobsTable(db);
   ensureSessionPreferencesTable(db);
+  ensureSessionPreferencesNickname(db);
+  ensureSessionPreferencesModelOverride(db);
+  ensureSessionsLlmColumns(db);
 }
 
 export function openDb(dbFile: string): Database.Database {

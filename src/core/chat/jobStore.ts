@@ -108,6 +108,22 @@ export class ChatJobStore {
     }));
   }
 
+  getActiveBySession(chatId: string, sessionId: string): ChatJobRecord | null {
+    const row = this.db
+      .prepare(
+        `SELECT id, chat_id, session_id, session_slot, prompt, status,
+                result_reply, result_session_slot, result_session_name, result_log_enabled,
+                error, created_at, updated_at, started_at, finished_at
+         FROM chat_jobs
+         WHERE chat_id = ? AND session_id = ? AND status IN ('pending', 'running')
+         ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, created_at ASC
+         LIMIT 1`
+      )
+      .get(chatId, sessionId) as ChatJobRow | undefined;
+
+    return row ? mapRow(row) : null;
+  }
+
   claimNextPending(): ChatJobRecord | null {
     const now = new Date().toISOString();
 
@@ -116,6 +132,12 @@ export class ChatJobStore {
         `SELECT id
          FROM chat_jobs
          WHERE status = 'pending'
+           AND NOT EXISTS (
+             SELECT 1
+             FROM chat_jobs AS running
+             WHERE running.session_id = chat_jobs.session_id
+               AND running.status = 'running'
+           )
          ORDER BY created_at ASC
          LIMIT 1`
       )

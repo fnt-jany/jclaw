@@ -4,9 +4,13 @@ import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { loadConfig } from "../../core/config/env";
 import { SessionStore, Session } from "../../core/session/sessionStore";
-import { runCodex } from "../../core/codex/runner";
-import { applyPlanModePrompt } from "../../core/codex/promptMode";
-import { resolveCodexCommand } from "../../core/commands/resolver";
+import { runLlm } from "../../core/llm/execute";
+import { resolveRunnerForSession } from "../../core/llm/router";
+import { formatAllModelCatalogs, formatModelCatalog, hasModelCatalog } from "../../core/llm/modelCatalog";
+import { applyPlanModePrompt } from "../../core/llm/promptMode";
+import { resolveCodexCommand } from "../../core/commands/codexResolver";
+import { resolveGeminiRunner } from "../../core/commands/geminiResolver";
+import { resolveClaudeRunner } from "../../core/commands/claudeResolver";
 import { InteractionLogger } from "../../core/logging/interactionLogger";
 import { DEFAULT_LOCAL_CHAT_ID, LOG_COMMAND, SLOT_TARGET_HINT, TEXT } from "../../shared/constants";
 import { sessionSummary } from "../../shared/types";
@@ -53,7 +57,9 @@ function printHelp(): void {
       `${LOG_COMMAND} Toggle interaction logging`,
       "/plan <on|off|status> Toggle plan mode",
       "/reason <none|low|medium|high|status> Set reasoning effort",
-      "/slot <list|show|bind> Manage slot-codex mapping",
+      "/model <name|status|clear> Set model override for this slot",
+      "/models [current|all|codex|gemini|claude] Show model arguments",
+      "/slot <list|show|bind> Manage slot-provider-thread mapping",
       "/exit                Quit chat mode"
     ].join("\n") + "\n"
   );
@@ -72,25 +78,31 @@ async function runPrompt(
   session: Session,
   store: SessionStore,
   interactionLogger: InteractionLogger,
-  codexCommand: string
+  codexCommand: string,
+  geminiRunner: { command: string; argsTemplate: string },
+  claudeRunner: { command: string; argsTemplate: string }
 ): Promise<void> {
   const planMode = store.getPlanMode(session.id);
   const effectivePrompt = applyPlanModePrompt(prompt, planMode);
 
-  const result = await runCodex({
-    codexCommand,
-    codexArgsTemplate: config.codexArgsTemplate,
+  const runner = resolveRunnerForSession(session, config, codexCommand, geminiRunner, claudeRunner);
+  const result = await runLlm({
+    codexCommand: runner.command,
+    codexArgsTemplate: runner.argsTemplate,
     prompt: effectivePrompt,
     sessionId: session.id,
-    codexSessionId: session.codexSessionId,
+    threadId: session.threadId,
     timeoutMs: config.codexTimeoutMs,
     workdir: config.codexWorkdir,
     codexNodeOptions: config.codexNodeOptions,
-      reasoningEffort: store.getReasoningEffort(session.id)
+    reasoningEffort: store.getReasoningEffort(session.id),
+    provider: runner.provider,
+    modelOverride: store.getSessionModelOverride(session.id)
   });
 
-  if (result.codexSessionId && result.codexSessionId !== session.codexSessionId) {
-    store.setCodexSessionId(session.id, result.codexSessionId);
+  const resolvedThreadId = result.threadId;
+  if (resolvedThreadId && resolvedThreadId !== session.threadId) {
+    store.setSessionThread(session.id, runner.provider, resolvedThreadId);
   }
 
   store.appendRun(session.id, {
@@ -149,6 +161,10 @@ export async function startCliChat(): Promise<void> {
   await interactionLogger.init();
 
   const resolved = await resolveCodexCommand(config.codexCommand);
+  const geminiResolved = await resolveGeminiRunner(config.geminiCommand, config.geminiArgsTemplate);
+  const geminiRunner = { command: geminiResolved.command, argsTemplate: geminiResolved.argsTemplate };
+  const claudeResolved = await resolveClaudeRunner(config.claudeCommand, config.claudeArgsTemplate);
+  const claudeRunner = { command: claudeResolved.command, argsTemplate: claudeResolved.argsTemplate };
 
   let session: Session;
   if (parsed.sessionId) {
@@ -250,6 +266,23 @@ export async function startCliChat(): Promise<void> {
         continue;
       }
 
+      if (line.startsWith("/model")) {
+        const arg = line.slice(6).trim();
+        if (!arg || arg.toLowerCase() === "status") {
+          const current = store.getSessionModelOverride(session.id);
+          output.write(`Model override: ${current || "(default)"}\n`);
+          continue;
+        }
+        if (arg.toLowerCase() === "clear") {
+          store.setSessionModelOverride(session.id, "");
+          output.write("Model override: (default)\n");
+          continue;
+        }
+        const saved = store.setSessionModelOverride(session.id, arg);
+        output.write(`Model override: ${saved}\n`);
+        continue;
+      }
+
       if (line.startsWith("/reason")) {
         const arg = line.split(" ").filter(Boolean)[1]?.toLowerCase() ?? "status";
         if (arg === "status") {
@@ -265,6 +298,27 @@ export async function startCliChat(): Promise<void> {
         continue;
       }
 
+      if (line.startsWith("/models")) {
+        const target = line.slice(7).trim().toLowerCase() || "current";
+        const provider = resolveRunnerForSession(session, config, resolved.command, geminiRunner, claudeRunner).provider;
+
+        if (target === "all") {
+          output.write(`${formatAllModelCatalogs()}\n`);
+          continue;
+        }
+        if (target === "current") {
+          output.write([`Current provider: ${provider}`, formatModelCatalog(provider), "Usage: /model <name>"].join("\n") + "\n");
+          continue;
+        }
+        if (hasModelCatalog(target)) {
+          output.write(`${formatModelCatalog(target)}\n`);
+          continue;
+        }
+
+        output.write("Usage: /models [current|all|codex|gemini|claude]\n");
+        continue;
+      }
+
       if (line.startsWith("/slot")) {
         const parts = line.split(" ").filter(Boolean);
         const sub = (parts[1] ?? "list").toLowerCase();
@@ -274,7 +328,7 @@ export async function startCliChat(): Promise<void> {
           if (!rows.length) {
             output.write("No slots found.\n");
           } else {
-            output.write(rows.map((r) => `${r.slotId} | session=${r.sessionId} | codex=${r.codexSessionId ?? "-"}`).join("\n") + "\n");
+            output.write(rows.map((r) => `${r.slotId} | session=${r.sessionId} | provider=${r.provider} | thread=${r.threadId ?? "-"}`).join("\n") + "\n");
           }
           continue;
         }
@@ -295,20 +349,22 @@ export async function startCliChat(): Promise<void> {
             output.write(`No session in slot ${slot}\n`);
             continue;
           }
-          output.write(`${sessionSummary(target)}\nCodex Session: ${target.codexSessionId ?? "-"}\n`);
+          output.write(`${sessionSummary(target)}\nProvider: ${target.provider}\nThread: ${target.threadId ?? "-"}\n`);
           continue;
         }
 
         if (sub === "bind") {
           const slot = (parts[2] ?? "").toUpperCase();
-          const codexSessionId = parts[3] ?? "";
-          if (!slot || !codexSessionId) {
-            output.write("Usage: /slot bind <A-Z> <codex_session_id>\n");
+          const threadId = parts[3] ?? "";
+          const providerInput = (parts[4] ?? "codex").toLowerCase();
+          const isValidProvider = providerInput === "codex" || providerInput === "gemini" || providerInput === "claude";
+          if (!slot || !threadId || !isValidProvider) {
+            output.write("Usage: /slot bind <A-Z> <thread_id> [codex|gemini|claude]\n");
             continue;
           }
           try {
-            const bound = store.bindCodexSession(parsed.chatId, slot, codexSessionId);
-            output.write(`Bound ${bound.shortId} -> ${bound.codexSessionId}\nSession Name: ${bound.id}\n`);
+            const bound = store.bindSessionThread(parsed.chatId, slot, providerInput, threadId);
+            output.write(`Bound ${bound.shortId} -> provider=${bound.provider}, thread=${bound.threadId ?? "-"}\nSession Name: ${bound.id}\n`);
           } catch (err) {
             output.write(`${String(err)}\n`);
           }
@@ -319,7 +375,7 @@ export async function startCliChat(): Promise<void> {
         continue;
       }
 
-      await runPrompt(line, parsed.chatId, session, store, interactionLogger, resolved.command);
+      await runPrompt(line, parsed.chatId, session, store, interactionLogger, resolved.command, geminiRunner, claudeRunner);
       const refreshed = store.getSession(session.id);
       if (refreshed) {
         session = refreshed;

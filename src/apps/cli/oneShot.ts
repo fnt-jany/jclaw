@@ -2,9 +2,12 @@ import dotenv from "dotenv";
 import path from "node:path";
 import { loadConfig } from "../../core/config/env";
 import { SessionStore } from "../../core/session/sessionStore";
-import { runCodex } from "../../core/codex/runner";
-import { applyPlanModePrompt } from "../../core/codex/promptMode";
-import { resolveCodexCommand } from "../../core/commands/resolver";
+import { runLlm } from "../../core/llm/execute";
+import { resolveRunnerForSession } from "../../core/llm/router";
+import { applyPlanModePrompt } from "../../core/llm/promptMode";
+import { resolveCodexCommand } from "../../core/commands/codexResolver";
+import { resolveGeminiRunner } from "../../core/commands/geminiResolver";
+import { resolveClaudeRunner } from "../../core/commands/claudeResolver";
 import { InteractionLogger } from "../../core/logging/interactionLogger";
 import { DEFAULT_LOCAL_CHAT_ID, SLOT_TARGET_HINT } from "../../shared/constants";
 import { sessionSummary } from "../../shared/types";
@@ -61,6 +64,8 @@ export async function startCliOneShot(): Promise<void> {
   await interactionLogger.init();
 
   const resolved = await resolveCodexCommand(config.codexCommand);
+  const geminiResolved = await resolveGeminiRunner(config.geminiCommand, config.geminiArgsTemplate);
+  const claudeResolved = await resolveClaudeRunner(config.claudeCommand, config.claudeArgsTemplate);
 
   let resolvedSessionId: string | null = null;
   if (parsed.sessionId) {
@@ -85,20 +90,30 @@ export async function startCliOneShot(): Promise<void> {
   const planMode = store.getPlanMode(session.id);
   const effectivePrompt = applyPlanModePrompt(parsed.prompt, planMode);
 
-  const result = await runCodex({
-    codexCommand: resolved.command,
-    codexArgsTemplate: config.codexArgsTemplate,
+  const runner = resolveRunnerForSession(
+    session,
+    config,
+    resolved.command,
+    { command: geminiResolved.command, argsTemplate: geminiResolved.argsTemplate },
+    { command: claudeResolved.command, argsTemplate: claudeResolved.argsTemplate }
+  );
+  const result = await runLlm({
+    codexCommand: runner.command,
+    codexArgsTemplate: runner.argsTemplate,
     prompt: effectivePrompt,
     sessionId: session.id,
-    codexSessionId: session.codexSessionId,
+    threadId: session.threadId,
     timeoutMs: config.codexTimeoutMs,
     workdir: config.codexWorkdir,
     codexNodeOptions: config.codexNodeOptions,
-      reasoningEffort: store.getReasoningEffort(session.id)
+    reasoningEffort: store.getReasoningEffort(session.id),
+    provider: runner.provider,
+    modelOverride: store.getSessionModelOverride(session.id)
   });
 
-  if (result.codexSessionId && result.codexSessionId !== session.codexSessionId) {
-    store.setCodexSessionId(session.id, result.codexSessionId);
+  const resolvedThreadId = result.threadId;
+  if (resolvedThreadId && resolvedThreadId !== session.threadId) {
+    store.setSessionThread(session.id, runner.provider, resolvedThreadId);
   }
 
   store.appendRun(session.id, {

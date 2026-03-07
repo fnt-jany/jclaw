@@ -5,9 +5,13 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { loadConfig } from "../../core/config/env";
 import { SessionStore, Session } from "../../core/session/sessionStore";
-import { runCodex } from "../../core/codex/runner";
-import { applyPlanModePrompt } from "../../core/codex/promptMode";
-import { resolveCodexCommand } from "../../core/commands/resolver";
+import { runLlm } from "../../core/llm/execute";
+import { resolveRunnerForSession } from "../../core/llm/router";
+import { formatAllModelCatalogs, formatModelCatalog, hasModelCatalog } from "../../core/llm/modelCatalog";
+import { applyPlanModePrompt } from "../../core/llm/promptMode";
+import { resolveCodexCommand } from "../../core/commands/codexResolver";
+import { resolveGeminiRunner } from "../../core/commands/geminiResolver";
+import { resolveClaudeRunner } from "../../core/commands/claudeResolver";
 import { InteractionLogger } from "../../core/logging/interactionLogger";
 import { CronStore } from "../../core/cron/store";
 import { buildOneShotCron } from "../../core/cron/oneshot";
@@ -15,6 +19,7 @@ import { parseArgs } from "../../core/commands/args";
 import { DEFAULT_LOCAL_CHAT_ID, LOG_COMMAND, SLOT_TARGET_HINT, TEXT } from "../../shared/constants";
 import { CommandResult, sessionSummary } from "../../shared/types";
 import { ChatJobStore, ChatJobRecord } from "../../core/chat/jobStore";
+import { sendTelegramTextNotification } from "../../core/telegram/notify";
 
 dotenv.config({ quiet: true });
 
@@ -28,6 +33,8 @@ const chatJobStore = new ChatJobStore(config.dbFile);
 const sessionLocks = new Set<string>();
 
 let codexCommandResolved = "";
+let geminiRunnerResolved = { command: "", argsTemplate: "" };
+let claudeRunnerResolved = { command: "", argsTemplate: "" };
 
 const WEB_PORT = Number(process.env.JCLAW_WEB_PORT ?? "3100");
 const WEB_HOST = process.env.JCLAW_WEB_HOST ?? "127.0.0.1";
@@ -490,6 +497,22 @@ function ensureAllowed(chatId: string): boolean {
   return config.allowedChatIds.size === 0 || config.allowedChatIds.has(chatId);
 }
 
+function getSessionNick(session: Session): string {
+  return store.getSessionNickname(session.id);
+}
+
+function buildSlotNickMap(chatId: string): Record<string, string> {
+  const rows = store.listSlotBindings(chatId);
+  const out: Record<string, string> = {};
+  for (const row of rows) {
+    const nick = store.getSessionNickname(row.sessionId).trim();
+    if (nick) {
+      out[row.slotId] = nick;
+    }
+  }
+  return out;
+}
+
 function buildReplyWithHeaders(
   session: Session,
   interactionId: number | null,
@@ -536,6 +559,7 @@ async function handleCronCommand(chatId: string, cmdLine: string, session: Sessi
       ].join("\n"),
       sessionSlot: session.shortId,
       sessionName: session.id,
+      sessionNick: getSessionNick(session),
       logEnabled: interactionLogger.isEnabled()
     };
   }
@@ -557,6 +581,7 @@ async function handleCronCommand(chatId: string, cmdLine: string, session: Sessi
         : TEXT.noCronJobs,
       sessionSlot: session.shortId,
       sessionName: session.id,
+      sessionNick: getSessionNick(session),
       logEnabled: interactionLogger.isEnabled()
     };
   }
@@ -572,6 +597,7 @@ async function handleCronCommand(chatId: string, cmdLine: string, session: Sessi
         reply: 'Missing --session, --at or --prompt. Example: /cron once --session A --at "2026-02-21T16:00:00+09:00" --prompt "status report"',
         sessionSlot: session.shortId,
         sessionName: session.id,
+        sessionNick: getSessionNick(session),
         logEnabled: interactionLogger.isEnabled()
       };
     }
@@ -609,6 +635,7 @@ next=${job.nextRunAt}`,
         reply: 'Missing --session, --cron or --prompt. Example: /cron add --session A --cron "*/5 * * * *" --prompt "status report"',
         sessionSlot: session.shortId,
         sessionName: session.id,
+        sessionNick: getSessionNick(session),
         logEnabled: interactionLogger.isEnabled()
       };
     }
@@ -688,20 +715,37 @@ async function runPrompt(chatId: string, session: Session, prompt: string): Prom
     const planMode = store.getPlanMode(session.id);
     const effectivePrompt = applyPlanModePrompt(prompt, planMode);
 
-    const result = await runCodex({
-      codexCommand: codexCommandResolved,
-      codexArgsTemplate: config.codexArgsTemplate,
+    const logChunk = (stream: "stdout" | "stderr", chunk: string): void => {
+      const single = chunk.replace(/\r?\n/g, "\\n").trim();
+      if (!single) {
+        return;
+      }
+      const clipped = single.length > 260 ? `${single.slice(0, 260)}...[+${single.length - 260} chars]` : single;
+      const elapsedSec = Math.floor((Date.now() - startedAt) / 1000);
+      console.log(`[jclaw-web] chunk slot=${session.shortId} session=${session.id} elapsed=${elapsedSec}s stream=${stream} msg=${clipped}`);
+    };
+
+    const runner = resolveRunnerForSession(session, config, codexCommandResolved, geminiRunnerResolved, claudeRunnerResolved);
+    const startedAt = Date.now();
+    const result = await runLlm({
+      codexCommand: runner.command,
+      codexArgsTemplate: runner.argsTemplate,
       prompt: effectivePrompt,
       sessionId: session.id,
-      codexSessionId: session.codexSessionId,
+      threadId: session.threadId,
       timeoutMs: config.codexTimeoutMs,
       workdir: config.codexWorkdir,
       codexNodeOptions: config.codexNodeOptions,
-      reasoningEffort: store.getReasoningEffort(session.id)
+      reasoningEffort: store.getReasoningEffort(session.id),
+      provider: runner.provider,
+      modelOverride: store.getSessionModelOverride(session.id),
+      onStdoutChunk: (chunk) => logChunk("stdout", chunk),
+      onStderrChunk: (chunk) => logChunk("stderr", chunk)
     });
 
-    if (result.codexSessionId && result.codexSessionId !== session.codexSessionId) {
-      store.setCodexSessionId(session.id, result.codexSessionId);
+    const resolvedThreadId = result.threadId;
+    if (resolvedThreadId && resolvedThreadId !== session.threadId) {
+      store.setSessionThread(session.id, runner.provider, resolvedThreadId);
     }
 
     store.appendRun(session.id, {
@@ -738,7 +782,7 @@ async function runPrompt(chatId: string, session: Session, prompt: string): Prom
 }
 
 async function handleCommand(chatId: string, session: Session, cmdLine: string): Promise<CommandResult | null> {
-  const parts = cmdLine.split(" ").filter(Boolean);
+  const parts = cmdLine.split(/\s+/).filter(Boolean);
   const cmd = parts[0]?.toLowerCase();
 
   if (!cmd || cmd === "/help") {
@@ -754,6 +798,9 @@ async function handleCommand(chatId: string, session: Session, cmdLine: string):
         LOG_COMMAND,
         "/plan <on|off|status>",
         "/reason <none|low|medium|high|status>",
+        "/model <name|status|clear>",
+        "/models [current|all|codex|gemini|claude]",
+        "/nick <name|status|clear>",
         "/cron ...",
         "/slot <list|show|bind>"
       ].join("\n"),
@@ -927,13 +974,119 @@ async function handleCommand(chatId: string, session: Session, cmdLine: string):
     };
   }
 
+
+
+  if (cmd === "/model") {
+    const value = parts.slice(1).join(" ").trim();
+
+    if (!value || value.toLowerCase() === "status") {
+      const current = store.getSessionModelOverride(session.id);
+      return {
+        reply: `Model override: ${current || "(default)"}`,
+        sessionSlot: session.shortId,
+        sessionName: session.id,
+        sessionNick: getSessionNick(session),
+        logEnabled: interactionLogger.isEnabled()
+      };
+    }
+
+    if (value.toLowerCase() === "clear") {
+      store.setSessionModelOverride(session.id, "");
+      return {
+        reply: "Model override: (default)",
+        sessionSlot: session.shortId,
+        sessionName: session.id,
+        sessionNick: getSessionNick(session),
+        logEnabled: interactionLogger.isEnabled()
+      };
+    }
+
+    const saved = store.setSessionModelOverride(session.id, value);
+    return {
+      reply: `Model override: ${saved}`,
+      sessionSlot: session.shortId,
+      sessionName: session.id,
+      sessionNick: getSessionNick(session),
+      logEnabled: interactionLogger.isEnabled()
+    };
+  }
+
+  if (cmd === "/models") {
+    const target = (parts[1] ?? "current").toLowerCase();
+    const provider = resolveRunnerForSession(
+      session,
+      config,
+      codexCommandResolved,
+      geminiRunnerResolved,
+      claudeRunnerResolved
+    ).provider;
+
+    let reply = "";
+    if (target === "all") {
+      reply = formatAllModelCatalogs();
+    } else if (target === "current") {
+      reply = [
+        `Current provider: ${provider}`,
+        formatModelCatalog(provider),
+        "Usage: /model <name>"
+      ].join("\n");
+    } else if (hasModelCatalog(target)) {
+      reply = formatModelCatalog(target);
+    } else {
+      reply = "Usage: /models [current|all|codex|gemini|claude]";
+    }
+
+    return {
+      reply,
+      sessionSlot: session.shortId,
+      sessionName: session.id,
+      sessionNick: getSessionNick(session),
+      logEnabled: interactionLogger.isEnabled()
+    };
+  }
+
+  if (cmd === "/nick") {
+    const value = parts.slice(1).join(" ").trim();
+
+    if (!value || value.toLowerCase() === "status") {
+      const current = getSessionNick(session);
+      return {
+        reply: `Nick: ${current || "-"}`,
+        sessionSlot: session.shortId,
+        sessionName: session.id,
+        sessionNick: current,
+        logEnabled: interactionLogger.isEnabled()
+      };
+    }
+
+    if (value.toLowerCase() === "clear") {
+      const cleared = store.setSessionNickname(session.id, "");
+      return {
+        reply: `Nick: ${cleared || "-"}`,
+        sessionSlot: session.shortId,
+        sessionName: session.id,
+        sessionNick: cleared,
+        logEnabled: interactionLogger.isEnabled()
+      };
+    }
+
+    const saved = store.setSessionNickname(session.id, value);
+    return {
+      reply: `Nick: ${saved || "-"}`,
+      sessionSlot: session.shortId,
+      sessionName: session.id,
+      sessionNick: saved,
+      logEnabled: interactionLogger.isEnabled()
+    };
+  }
+
   if (cmd === "/slot") {
     const sub = (parts[1] ?? "list").toLowerCase();
     if (sub === "list") {
       const rows = store.listSlotBindings(chatId);
       return {
         reply: rows.length
-          ? rows.map((r) => `${r.slotId} | session=${r.sessionId} | codex=${r.codexSessionId ?? "-"}`).join("\n")
+          ? rows.map((r) => `${r.slotId} | session=${r.sessionId} | provider=${r.provider} | thread=${r.threadId ?? "-"}`).join("\n")
           : "No slots found.",
         sessionSlot: session.shortId,
         sessionName: session.id,
@@ -973,7 +1126,7 @@ async function handleCommand(chatId: string, session: Session, cmdLine: string):
       }
 
       return {
-        reply: `${sessionSummary(target)}\nCodex Session: ${target.codexSessionId ?? "-"}`,
+        reply: `${sessionSummary(target)}\nProvider: ${target.provider}\nThread: ${target.threadId ?? "-"}`,
         sessionSlot: session.shortId,
         sessionName: session.id,
         logEnabled: interactionLogger.isEnabled()
@@ -982,10 +1135,20 @@ async function handleCommand(chatId: string, session: Session, cmdLine: string):
 
     if (sub === "bind") {
       const slot = (parts[2] ?? "").toUpperCase();
-      const codexSessionId = parts[3] ?? "";
-      if (!slot || !codexSessionId) {
+      const threadId = parts[3] ?? "";
+      const providerInput = (parts[4] ?? "codex").toLowerCase();
+      const isValidProvider = providerInput === "codex" || providerInput === "gemini" || providerInput === "claude";
+      if (!slot || !threadId) {
         return {
-          reply: "Usage: /slot bind <A-Z> <codex_session_id>",
+          reply: "Usage: /slot bind <A-Z> <thread_id> [codex|gemini|claude]",
+          sessionSlot: session.shortId,
+          sessionName: session.id,
+          logEnabled: interactionLogger.isEnabled()
+        };
+      }
+      if (!isValidProvider) {
+        return {
+          reply: "Usage: /slot bind <A-Z> <thread_id> [codex|gemini|claude]",
           sessionSlot: session.shortId,
           sessionName: session.id,
           logEnabled: interactionLogger.isEnabled()
@@ -993,9 +1156,10 @@ async function handleCommand(chatId: string, session: Session, cmdLine: string):
       }
 
       try {
-        const bound = store.bindCodexSession(chatId, slot, codexSessionId);
+        const bound = store.bindSessionThread(chatId, slot, providerInput, threadId);
         return {
-          reply: `Bound ${bound.shortId} -> ${bound.codexSessionId}\nSession Name: ${bound.id}`,
+          reply: `Bound ${bound.shortId} -> provider=${bound.provider}, thread=${bound.threadId ?? "-"}
+Session Name: ${bound.id}`,
           sessionSlot: session.shortId,
           sessionName: session.id,
           logEnabled: interactionLogger.isEnabled()
@@ -1076,10 +1240,27 @@ async function handleApiChat(req: IncomingMessage, res: ServerResponse): Promise
     if (!hasAttachment && normalized.startsWith("/")) {
       const cmdResult = await handleCommand(chatId, session, normalized);
       if (cmdResult) {
-        json(res, 200, cmdResult);
+        const resultSession = store.getSession(cmdResult.sessionName) ?? session;
+        json(res, 200, { ...cmdResult, sessionNick: getSessionNick(resultSession) });
         return;
       }
       json(res, 400, { error: "Unknown command" });
+      return;
+    }
+
+    const activeJob = chatJobStore.getActiveBySession(chatId, session.id);
+    if (activeJob) {
+      scheduleChatWorkers();
+      json(res, 409, {
+        error: `Session ${session.shortId} already has an active request. Wait for it to finish.`,
+        code: "SESSION_BUSY",
+        jobId: activeJob.id,
+        status: activeJob.status,
+        sessionSlot: session.shortId,
+        sessionName: session.id,
+        sessionNick: getSessionNick(session),
+        logEnabled: interactionLogger.isEnabled()
+      });
       return;
     }
 
@@ -1095,6 +1276,7 @@ async function handleApiChat(req: IncomingMessage, res: ServerResponse): Promise
       jobId: job.id,
       sessionSlot: session.shortId,
       sessionName: session.id,
+      sessionNick: getSessionNick(session),
       logEnabled: interactionLogger.isEnabled()
     });
     scheduleChatWorkers();
@@ -1249,6 +1431,8 @@ async function handleApiState(req: IncomingMessage, res: ServerResponse): Promis
       chatId,
       sessionSlot: session.shortId,
       sessionName: session.id,
+      sessionNick: getSessionNick(session),
+      slotNicks: buildSlotNickMap(chatId),
       logEnabled,
       auth: {
         email: auth.email,
@@ -1306,6 +1490,40 @@ async function handleApiAuthGoogle(req: IncomingMessage, res: ServerResponse): P
   }
 }
 
+async function notifyDevLoginLocked(req: IncomingMessage): Promise<void> {
+  if (!config.telegramBotToken || config.allowedChatIds.size === 0) {
+    return;
+  }
+
+  const forwardedFor = String(req.headers["x-forwarded-for"] ?? "").split(",")[0].trim();
+  const remoteIp = forwardedFor || req.socket.remoteAddress || "unknown";
+  const userAgent = String(req.headers["user-agent"] ?? "unknown");
+  const ts = new Date().toISOString();
+  const message = [
+    "[jclaw-web] SECURITY ALERT",
+    `event: dev-login-locked`,
+    `failed_attempts: ${WEB_DEV_MAX_FAILED_ATTEMPTS}`,
+    `ip: ${remoteIp}`,
+    `user_agent: ${userAgent}`,
+    `time: ${ts}`
+  ].join("\n");
+
+  const targets = Array.from(config.allowedChatIds);
+  await Promise.all(
+    targets.map(async (chatId) => {
+      try {
+        await sendTelegramTextNotification({
+          botToken: config.telegramBotToken,
+          chatId,
+          text: message
+        });
+      } catch (err) {
+        console.error(`[jclaw-web] failed to send dev-login lock alert to ${chatId}:`, err);
+      }
+    })
+  );
+}
+
 async function handleApiAuthDev(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (devPasswordLocked) {
     json(res, 423, { error: "Developer login is locked. Restart server to unlock." });
@@ -1331,6 +1549,7 @@ async function handleApiAuthDev(req: IncomingMessage, res: ServerResponse): Prom
     if (devPasswordFailedAttempts >= WEB_DEV_MAX_FAILED_ATTEMPTS) {
       devPasswordLocked = true;
       console.warn("[jclaw-web] developer login locked after too many failed attempts; restart server to unlock.");
+      void notifyDevLoginLocked(req);
       json(res, 423, { error: "Developer login locked after 3 failed attempts. Restart server to unlock." });
       return;
     }
@@ -1434,6 +1653,12 @@ export async function startWebServer(): Promise<void> {
 
   const resolved = await resolveCodexCommand(config.codexCommand);
   codexCommandResolved = resolved.command;
+  const geminiResolved = await resolveGeminiRunner(config.geminiCommand, config.geminiArgsTemplate);
+  geminiRunnerResolved = { command: geminiResolved.command, argsTemplate: geminiResolved.argsTemplate };
+  console.log(`[jclaw-web] gemini command resolved: ${geminiResolved.command} (${geminiResolved.source})`);
+  const claudeResolved = await resolveClaudeRunner(config.claudeCommand, config.claudeArgsTemplate);
+  claudeRunnerResolved = { command: claudeResolved.command, argsTemplate: claudeResolved.argsTemplate };
+  console.log(`[jclaw-web] claude command resolved: ${claudeResolved.command} (${claudeResolved.source})`);
 
   scheduleChatWorkers();
 

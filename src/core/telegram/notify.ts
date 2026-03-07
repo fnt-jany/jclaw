@@ -90,3 +90,31 @@ export async function sendCronTelegramNotification(input: CronNotifyInput): Prom
     throw new Error(`Telegram notify failed (${response.status}): ${text}`);
   }
 }
+
+
+type TelegramTextInput = {
+  botToken: string;
+  chatId: string;
+  text: string;
+};
+
+export async function sendTelegramTextNotification(input: TelegramTextInput): Promise<void> {
+  const botToken = input.botToken.trim();
+  if (!botToken) {
+    return;
+  }
+
+  const response = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      chat_id: input.chatId,
+      text: input.text
+    })
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Telegram notify failed (${response.status}): ${text}`);
+  }
+}

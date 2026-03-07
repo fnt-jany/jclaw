@@ -4,6 +4,7 @@ export type CommandResult = {
   reply: string;
   sessionSlot: string;
   sessionName: string;
+  sessionNick?: string;
   logEnabled: boolean;
 };
 

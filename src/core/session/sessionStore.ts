@@ -1,7 +1,9 @@
 import { randomBytes } from "node:crypto";
-import { deleteCodexSessionFiles } from "../codex/sessionFiles";
+import { deleteCodexSessionFiles } from "../llm/providers/codex/artifacts";
+import { deleteGeminiSessionFiles } from "../llm/providers/gemini/artifacts";
 import { openDb } from "../db/database";
 import { SLOT_IDS, type SlotId } from "../../shared/constants";
+import type { LlmProviderId } from "../llm/types";
 
 export type RunRecord = {
   id: string;
@@ -17,7 +19,8 @@ export type Session = {
   id: string;
   shortId: SlotId;
   chatId: string | null;
-  codexSessionId: string | null;
+  provider: LlmProviderId;
+  threadId: string | null;
   createdAt: string;
   updatedAt: string;
   history: RunRecord[];
@@ -76,7 +79,8 @@ export class SessionStore {
       id: this.generateSessionId(chatId, slot),
       shortId: slot,
       chatId,
-      codexSessionId: null,
+      provider: "codex",
+      threadId: null,
       createdAt: now,
       updatedAt: now,
       history: []
@@ -90,10 +94,10 @@ export class SessionStore {
     const session = this.createSession(chatId, slot);
     this.db
       .prepare(
-        `INSERT INTO sessions (id, short_id, chat_id, codex_session_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)`
+        `INSERT INTO sessions (id, short_id, chat_id, codex_session_id, llm_provider, llm_thread_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(session.id, session.shortId, session.chatId, session.codexSessionId, session.createdAt, session.updatedAt);
+      .run(session.id, session.shortId, session.chatId, session.threadId, session.provider, session.threadId, session.createdAt, session.updatedAt);
 
     this.upsertActiveSession(chatId, channel, session.id);
 
@@ -107,10 +111,10 @@ export class SessionStore {
     const session = this.createSession(chatId, slot);
     this.db
       .prepare(
-        `INSERT INTO sessions (id, short_id, chat_id, codex_session_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)`
+        `INSERT INTO sessions (id, short_id, chat_id, codex_session_id, llm_provider, llm_thread_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(session.id, session.shortId, session.chatId, session.codexSessionId, session.createdAt, session.updatedAt);
+      .run(session.id, session.shortId, session.chatId, session.threadId, session.provider, session.threadId, session.createdAt, session.updatedAt);
 
     this.upsertActiveSession(chatId, channel, session.id);
 
@@ -206,10 +210,10 @@ export class SessionStore {
     const session = this.createSession(chatId, slot);
     this.db
       .prepare(
-        `INSERT INTO sessions (id, short_id, chat_id, codex_session_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)`
+        `INSERT INTO sessions (id, short_id, chat_id, codex_session_id, llm_provider, llm_thread_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(session.id, session.shortId, session.chatId, session.codexSessionId, session.createdAt, session.updatedAt);
+      .run(session.id, session.shortId, session.chatId, session.threadId, session.provider, session.threadId, session.createdAt, session.updatedAt);
 
     return session;
   }
@@ -217,7 +221,7 @@ export class SessionStore {
   getSession(sessionId: string): Session | null {
     const row = this.db
       .prepare(
-        `SELECT id, short_id, chat_id, codex_session_id, created_at, updated_at
+        `SELECT id, short_id, chat_id, codex_session_id, llm_provider, llm_thread_id, created_at, updated_at
          FROM sessions WHERE id = ?`
       )
       .get(sessionId) as
@@ -226,6 +230,8 @@ export class SessionStore {
           short_id: string;
           chat_id: string | null;
           codex_session_id: string | null;
+          llm_provider: string;
+          llm_thread_id: string | null;
           created_at: string;
           updated_at: string;
         }
@@ -239,20 +245,21 @@ export class SessionStore {
       id: row.id,
       shortId: row.short_id as SlotId,
       chatId: row.chat_id,
-      codexSessionId: row.codex_session_id,
+      provider: row.llm_provider as LlmProviderId,
+      threadId: row.llm_thread_id ?? row.codex_session_id,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       history: this.listHistory(sessionId, Number.MAX_SAFE_INTEGER)
     };
   }
 
-  setCodexSessionId(sessionId: string, codexSessionId: string): void {
+  setSessionThread(sessionId: string, provider: LlmProviderId, threadId: string): void {
     this.db
-      .prepare("UPDATE sessions SET codex_session_id = ?, updated_at = ? WHERE id = ?")
-      .run(codexSessionId, new Date().toISOString(), sessionId);
+      .prepare("UPDATE sessions SET llm_provider = ?, llm_thread_id = ?, codex_session_id = ?, updated_at = ? WHERE id = ?")
+      .run(provider, threadId, threadId, new Date().toISOString(), sessionId);
   }
 
-  bindCodexSession(chatId: string, slot: string, codexSessionId: string): Session {
+  bindSessionThread(chatId: string, slot: string, provider: LlmProviderId, threadId: string): Session {
     const slotId = slot.toUpperCase() as SlotId;
     if (!SLOT_IDS.includes(slotId)) {
       throw new Error(`Invalid slot id: ${slot}`);
@@ -263,7 +270,7 @@ export class SessionStore {
       .get(chatId, slotId) as { id: string } | undefined;
 
     if (row) {
-      this.setCodexSessionId(row.id, codexSessionId);
+      this.setSessionThread(row.id, provider, threadId);
       const session = this.getSession(row.id);
       if (!session) {
         throw new Error(`Session not found: ${row.id}`);
@@ -272,33 +279,35 @@ export class SessionStore {
     }
 
     const session = this.createSession(chatId, slotId);
-    session.codexSessionId = codexSessionId;
+    session.provider = provider;
+    session.threadId = threadId;
     session.updatedAt = new Date().toISOString();
 
     this.db
       .prepare(
-        `INSERT INTO sessions (id, short_id, chat_id, codex_session_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)`
+        `INSERT INTO sessions (id, short_id, chat_id, codex_session_id, llm_provider, llm_thread_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(session.id, session.shortId, session.chatId, session.codexSessionId, session.createdAt, session.updatedAt);
+      .run(session.id, session.shortId, session.chatId, session.threadId, session.provider, session.threadId, session.createdAt, session.updatedAt);
 
     return session;
   }
 
-  listSlotBindings(chatId: string): Array<{ slotId: SlotId; sessionId: string; codexSessionId: string | null }> {
+  listSlotBindings(chatId: string): Array<{ slotId: SlotId; sessionId: string; provider: LlmProviderId; threadId: string | null }> {
     const rows = this.db
       .prepare(
-        `SELECT short_id, id, codex_session_id
+        `SELECT short_id, id, codex_session_id, llm_provider, llm_thread_id
          FROM sessions
          WHERE chat_id = ?
          ORDER BY short_id ASC`
       )
-      .all(chatId) as Array<{ short_id: string; id: string; codex_session_id: string | null }>;
+      .all(chatId) as Array<{ short_id: string; id: string; codex_session_id: string | null; llm_provider: string; llm_thread_id: string | null }>;
 
     return rows.map((row) => ({
       slotId: row.short_id as SlotId,
       sessionId: row.id,
-      codexSessionId: row.codex_session_id
+      provider: row.llm_provider as LlmProviderId,
+      threadId: row.llm_thread_id ?? row.codex_session_id
     }));
   }
 
@@ -341,6 +350,50 @@ export class SessionStore {
       .run(sessionId, effort);
 
     return this.getReasoningEffort(sessionId);
+  }
+
+  getSessionModelOverride(sessionId: string): string {
+    const row = this.db
+      .prepare("SELECT model_override FROM session_preferences WHERE session_id = ?")
+      .get(sessionId) as { model_override: string } | undefined;
+
+    return (row?.model_override ?? "").trim();
+  }
+
+  setSessionModelOverride(sessionId: string, modelName: string): string {
+    const normalized = modelName.trim().slice(0, 120);
+
+    this.db
+      .prepare(
+        `INSERT INTO session_preferences(session_id, model_override)
+         VALUES (?, ?)
+         ON CONFLICT(session_id) DO UPDATE SET model_override = excluded.model_override`
+      )
+      .run(sessionId, normalized);
+
+    return this.getSessionModelOverride(sessionId);
+  }
+
+  getSessionNickname(sessionId: string): string {
+    const row = this.db
+      .prepare("SELECT nickname FROM session_preferences WHERE session_id = ?")
+      .get(sessionId) as { nickname: string } | undefined;
+
+    return (row?.nickname ?? "").trim();
+  }
+
+  setSessionNickname(sessionId: string, nickname: string): string {
+    const normalized = nickname.trim().slice(0, 40);
+
+    this.db
+      .prepare(
+        `INSERT INTO session_preferences(session_id, nickname)
+         VALUES (?, ?)
+         ON CONFLICT(session_id) DO UPDATE SET nickname = excluded.nickname`
+      )
+      .run(sessionId, normalized);
+
+    return this.getSessionNickname(sessionId);
   }
 
   appendRun(sessionId: string, run: RunRecord): Session {
@@ -439,8 +492,8 @@ export class SessionStore {
 
   private removeSession(sessionId: string): void {
     const existing = this.db
-      .prepare("SELECT id, chat_id, codex_session_id FROM sessions WHERE id = ?")
-      .get(sessionId) as { id: string; chat_id: string | null; codex_session_id: string | null } | undefined;
+      .prepare("SELECT id, chat_id, llm_provider, llm_thread_id, codex_session_id FROM sessions WHERE id = ?")
+      .get(sessionId) as { id: string; chat_id: string | null; llm_provider: string; llm_thread_id: string | null; codex_session_id: string | null } | undefined;
 
     if (!existing) {
       return;
@@ -455,12 +508,18 @@ export class SessionStore {
         .run(existing.chat_id, sessionId);
     }
 
-    if (existing.codex_session_id) {
+    const threadId = existing.llm_thread_id ?? existing.codex_session_id;
+    const provider = existing.llm_provider as LlmProviderId;
+    if (threadId) {
       const stillReferenced = this.db
-        .prepare("SELECT COUNT(1) as cnt FROM sessions WHERE codex_session_id = ?")
-        .get(existing.codex_session_id) as { cnt: number };
+        .prepare("SELECT COUNT(1) as cnt FROM sessions WHERE llm_provider = ? AND coalesce(llm_thread_id, codex_session_id) = ?")
+        .get(provider, threadId) as { cnt: number };
       if (stillReferenced.cnt === 0) {
-        void deleteCodexSessionFiles(existing.codex_session_id);
+        if (provider === "codex") {
+          void deleteCodexSessionFiles(threadId);
+        } else if (provider === "gemini") {
+          void deleteGeminiSessionFiles(threadId);
+        }
       }
     }
   }

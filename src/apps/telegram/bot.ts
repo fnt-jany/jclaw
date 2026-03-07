@@ -5,9 +5,13 @@ import { Telegraf } from "telegraf";
 import type { Context } from "telegraf";
 import { loadConfig } from "../../core/config/env";
 import { SessionStore } from "../../core/session/sessionStore";
-import { runCodex } from "../../core/codex/runner";
-import { applyPlanModePrompt } from "../../core/codex/promptMode";
-import { resolveCodexCommand } from "../../core/commands/resolver";
+import { runLlm } from "../../core/llm/execute";
+import { resolveRunnerForSession } from "../../core/llm/router";
+import { formatAllModelCatalogs, formatModelCatalog, hasModelCatalog } from "../../core/llm/modelCatalog";
+import { applyPlanModePrompt } from "../../core/llm/promptMode";
+import { resolveCodexCommand } from "../../core/commands/codexResolver";
+import { resolveGeminiRunner } from "../../core/commands/geminiResolver";
+import { resolveClaudeRunner } from "../../core/commands/claudeResolver";
 import { InteractionLogger } from "../../core/logging/interactionLogger";
 import { CronStore } from "../../core/cron/store";
 import { buildOneShotCron } from "../../core/cron/oneshot";
@@ -27,6 +31,8 @@ const interactionLogger = new InteractionLogger(interactionLogPath);
 const cronStore = new CronStore(config.dbFile);
 const sessionLocks = new Set<string>();
 let startupNotificationSent = false;
+let resolvedGeminiRunner = { command: "", argsTemplate: "" };
+let resolvedClaudeRunner = { command: "", argsTemplate: "" };
 const telegramUploadDir = path.join(dataDir, "telegram_uploads");
 const TELEGRAM_UPLOAD_MAX_FILES = Math.max(1, Number(process.env.TELEGRAM_UPLOAD_MAX_FILES ?? "200") || 200);
 
@@ -107,12 +113,6 @@ function isAllowed(chatId: string): boolean {
   return config.allowedChatIds.size === 0 || config.allowedChatIds.has(chatId);
 }
 
-function isAdmin(chatId: string): boolean {
-  if (config.adminChatIds.size === 0) {
-    return isAllowed(chatId);
-  }
-  return config.adminChatIds.has(chatId);
-}
 
 function formatResult(output: string, error: string | null, maxChars: number): string {
   const merged = [output.trim(), error ? `ERR:\n${error}` : ""]
@@ -345,8 +345,20 @@ function attachHandlers(bot: Telegraf, resolvedCodexCommand: string): void {
           });
       };
 
-      const onChunk = (): void => {
+      const startedAt = Date.now();
+      const logChunk = (stream: "stdout" | "stderr", chunk: string): void => {
+        const single = chunk.replace(/\r?\n/g, "\\n").trim();
+        if (!single) {
+          return;
+        }
+        const clipped = single.length > 260 ? `${single.slice(0, 260)}...[+${single.length - 260} chars]` : single;
+        const elapsedSec = Math.floor((Date.now() - startedAt) / 1000);
+        console.log(`[jclaw-telegram] chunk slot=${session.shortId} session=${session.id} elapsed=${elapsedSec}s stream=${stream} msg=${clipped}`);
+      };
+
+      const onChunk = (stream: "stdout" | "stderr", chunk: string): void => {
         maybeSendTyping();
+        logChunk(stream, chunk);
       };
 
       try {
@@ -354,22 +366,26 @@ function attachHandlers(bot: Telegraf, resolvedCodexCommand: string): void {
         const effectivePrompt = applyPlanModePrompt(prompt, planMode);
         maybeSendTyping();
 
-        const result = await runCodex({
-          codexCommand: resolvedCodexCommand,
-          codexArgsTemplate: config.codexArgsTemplate,
+        const runner = resolveRunnerForSession(session, config, resolvedCodexCommand, resolvedGeminiRunner, resolvedClaudeRunner);
+        const result = await runLlm({
+          codexCommand: runner.command,
+          codexArgsTemplate: runner.argsTemplate,
           prompt: effectivePrompt,
           sessionId: session.id,
-          codexSessionId: session.codexSessionId,
+          threadId: session.threadId,
           timeoutMs: config.codexTimeoutMs,
           workdir: config.codexWorkdir,
           codexNodeOptions: config.codexNodeOptions,
       reasoningEffort: store.getReasoningEffort(session.id),
-          onStdoutChunk: onChunk,
-          onStderrChunk: onChunk
+      provider: runner.provider,
+      modelOverride: store.getSessionModelOverride(session.id),
+          onStdoutChunk: (chunk) => onChunk("stdout", chunk),
+          onStderrChunk: (chunk) => onChunk("stderr", chunk)
         });
 
-        if (result.codexSessionId && result.codexSessionId !== session.codexSessionId) {
-          store.setCodexSessionId(session.id, result.codexSessionId);
+        const resolvedThreadId = result.threadId;
+        if (resolvedThreadId && resolvedThreadId !== session.threadId) {
+          store.setSessionThread(session.id, runner.provider, resolvedThreadId);
         }
 
         store.appendRun(session.id, {
@@ -433,11 +449,13 @@ function attachHandlers(bot: Telegraf, resolvedCodexCommand: string): void {
       "/whoami (/i) - show your chat id",
       `${LOG_COMMAND} (/l) - toggle interaction log`,
       "/cron ... (/c) - schedule prompts",
-      "/slot <list|show|bind> (/t) - manage slot-codex mapping",
+      "/slot <list|show|bind> (/t) - manage slot-provider-thread mapping",
       "/plan <on|off|status> (/p) - toggle plan mode",
       "/reason <none|low|medium|high|status> - set reasoning effort per session",
-      "/status (/a) - bot status (admin)",
-      "/restart (/r) - bot restart (admin)",
+      "/model <name|status|clear> - set model override per session",
+      "/models [current|all|codex|gemini|claude] - show model arguments",
+      "/status (/a) - bot status",
+      "/restart (/r) - bot restart",
       "Plain text is treated as execution prompt",
       "Session slots rotate A->B->...->Z->A"
     ].join("\n");
@@ -732,6 +750,69 @@ function attachHandlers(bot: Telegraf, resolvedCodexCommand: string): void {
     await ctx.reply("Usage: /reason <none|low|medium|high|status>");
   });
 
+
+
+  bot.command("model", async (ctx) => {
+    const chatId = chatIdOf(ctx);
+    if (!chatId || !isAllowed(chatId)) {
+      await ctx.reply("Access denied.");
+      return;
+    }
+
+    const parts = (ctx.message as { text?: string }).text?.split(" ").filter(Boolean) ?? [];
+    const value = parts.slice(1).join(" ").trim();
+    const current = store.getOrCreateSessionByChat(chatId, "telegram");
+
+    if (!value || value.toLowerCase() === "status") {
+      const active = store.getSessionModelOverride(current.id);
+      await ctx.reply(`Model override (${current.shortId}): ${active || "(default)"}`);
+      return;
+    }
+
+    if (value.toLowerCase() === "clear") {
+      store.setSessionModelOverride(current.id, "");
+      await ctx.reply(`Model override (${current.shortId}): (default)`);
+      return;
+    }
+
+    const saved = store.setSessionModelOverride(current.id, value);
+    await ctx.reply(`Model override (${current.shortId}): ${saved}`);
+  });
+
+  bot.command("models", async (ctx) => {
+    const chatId = chatIdOf(ctx);
+    if (!chatId || !isAllowed(chatId)) {
+      await ctx.reply("Access denied.");
+      return;
+    }
+
+    const parts = (ctx.message as { text?: string }).text?.split(" ").filter(Boolean) ?? [];
+    const target = (parts[1] ?? "current").toLowerCase();
+    const current = store.getOrCreateSessionByChat(chatId, "telegram");
+    const provider = resolveRunnerForSession(current, config, resolvedCodexCommand, resolvedGeminiRunner, resolvedClaudeRunner).provider;
+
+    if (target === "all") {
+      await ctx.reply(formatAllModelCatalogs());
+      return;
+    }
+
+    if (target === "current") {
+      await ctx.reply([
+        `Current provider: ${provider}`,
+        formatModelCatalog(provider),
+        "Usage: /model <name>"
+      ].join("\n"));
+      return;
+    }
+
+    if (hasModelCatalog(target)) {
+      await ctx.reply(formatModelCatalog(target));
+      return;
+    }
+
+    await ctx.reply("Usage: /models [current|all|codex|gemini|claude]");
+  });
+
   bot.command("slot", async (ctx) => {
     const chatId = chatIdOf(ctx);
     if (!chatId || !isAllowed(chatId)) {
@@ -748,7 +829,7 @@ function attachHandlers(bot: Telegraf, resolvedCodexCommand: string): void {
         await ctx.reply("No slots found.");
         return;
       }
-      await ctx.reply(rows.map((r) => `${r.slotId} | session=${r.sessionId} | codex=${r.codexSessionId ?? "-"}`).join("\n"));
+      await ctx.reply(rows.map((r) => `${r.slotId} | session=${r.sessionId} | provider=${r.provider} | thread=${r.threadId ?? "-"}`).join("\n"));
       return;
     }
 
@@ -768,20 +849,23 @@ function attachHandlers(bot: Telegraf, resolvedCodexCommand: string): void {
         await ctx.reply(`No session in slot ${slot}`);
         return;
       }
-      await ctx.reply(`${sessionSummary(session)}\nCodex Session: ${session.codexSessionId ?? "-"}`);
+      await ctx.reply(`${sessionSummary(session)}\nProvider: ${session.provider}\nThread: ${session.threadId ?? "-"}`);
       return;
     }
 
     if (sub === "bind") {
       const slot = (parts[2] ?? "").toUpperCase();
-      const codexSessionId = parts[3] ?? "";
-      if (!slot || !codexSessionId) {
-        await ctx.reply("Usage: /slot bind <A-Z> <codex_session_id>");
+      const threadId = parts[3] ?? "";
+      const providerInput = (parts[4] ?? "codex").toLowerCase();
+      const isValidProvider = providerInput === "codex" || providerInput === "gemini" || providerInput === "claude";
+      if (!slot || !threadId || !isValidProvider) {
+        await ctx.reply("Usage: /slot bind <A-Z> <thread_id> [codex|gemini|claude]");
         return;
       }
       try {
-        const session = store.bindCodexSession(chatId, slot, codexSessionId);
-        await ctx.reply(`Bound ${session.shortId} -> ${session.codexSessionId}\nSession Name: ${session.id}`);
+        const session = store.bindSessionThread(chatId, slot, providerInput, threadId);
+        await ctx.reply(`Bound ${session.shortId} -> provider=${session.provider}, thread=${session.threadId ?? "-"}
+Session Name: ${session.id}`);
       } catch (err) {
         await ctx.reply(String(err));
       }
@@ -807,7 +891,7 @@ function attachHandlers(bot: Telegraf, resolvedCodexCommand: string): void {
         await ctx.reply("No slots found.");
         return;
       }
-      await ctx.reply(rows.map((r) => `${r.slotId} | session=${r.sessionId} | codex=${r.codexSessionId ?? "-"}`).join("\n"));
+      await ctx.reply(rows.map((r) => `${r.slotId} | session=${r.sessionId} | provider=${r.provider} | thread=${r.threadId ?? "-"}`).join("\n"));
       return;
     }
 
@@ -827,20 +911,23 @@ function attachHandlers(bot: Telegraf, resolvedCodexCommand: string): void {
         await ctx.reply(`No session in slot ${slot}`);
         return;
       }
-      await ctx.reply(`${sessionSummary(session)}\nCodex Session: ${session.codexSessionId ?? "-"}`);
+      await ctx.reply(`${sessionSummary(session)}\nProvider: ${session.provider}\nThread: ${session.threadId ?? "-"}`);
       return;
     }
 
     if (sub === "bind") {
       const slot = (parts[2] ?? "").toUpperCase();
-      const codexSessionId = parts[3] ?? "";
-      if (!slot || !codexSessionId) {
-        await ctx.reply("Usage: /slot bind <A-Z> <codex_session_id>");
+      const threadId = parts[3] ?? "";
+      const providerInput = (parts[4] ?? "codex").toLowerCase();
+      const isValidProvider = providerInput === "codex" || providerInput === "gemini" || providerInput === "claude";
+      if (!slot || !threadId || !isValidProvider) {
+        await ctx.reply("Usage: /slot bind <A-Z> <thread_id> [codex|gemini|claude]");
         return;
       }
       try {
-        const session = store.bindCodexSession(chatId, slot, codexSessionId);
-        await ctx.reply(`Bound ${session.shortId} -> ${session.codexSessionId}\nSession Name: ${session.id}`);
+        const session = store.bindSessionThread(chatId, slot, providerInput, threadId);
+        await ctx.reply(`Bound ${session.shortId} -> provider=${session.provider}, thread=${session.threadId ?? "-"}
+Session Name: ${session.id}`);
       } catch (err) {
         await ctx.reply(String(err));
       }
@@ -889,11 +976,6 @@ function attachHandlers(bot: Telegraf, resolvedCodexCommand: string): void {
       return;
     }
 
-    if (!isAdmin(chatId)) {
-      await ctx.reply("Admin only.");
-      return;
-    }
-
     await ctx.reply(`Bot status: running
 PID: ${process.pid}`);
   });
@@ -902,11 +984,6 @@ PID: ${process.pid}`);
     const chatId = chatIdOf(ctx);
     if (!chatId || !isAllowed(chatId)) {
       await ctx.reply("Access denied.");
-      return;
-    }
-
-    if (!isAdmin(chatId)) {
-      await ctx.reply("Admin only.");
       return;
     }
 
@@ -921,11 +998,6 @@ PID: ${process.pid}`);
       return;
     }
 
-    if (!isAdmin(chatId)) {
-      await ctx.reply("Admin only.");
-      return;
-    }
-
     await ctx.reply("Restarting bot process...");
     setTimeout(() => process.exit(0), 500);
   });
@@ -934,11 +1006,6 @@ PID: ${process.pid}`);
     const chatId = chatIdOf(ctx);
     if (!chatId || !isAllowed(chatId)) {
       await ctx.reply("Access denied.");
-      return;
-    }
-
-    if (!isAdmin(chatId)) {
-      await ctx.reply("Admin only.");
       return;
     }
 
@@ -1089,7 +1156,12 @@ export async function startTelegramBot(): Promise<void> {
 
   const resolved = await resolveCodexCommand(config.codexCommand);
   console.log(`[jclaw] codex command resolved: ${resolved.command} (${resolved.source})`);
-
+  const geminiResolved = await resolveGeminiRunner(config.geminiCommand, config.geminiArgsTemplate);
+  resolvedGeminiRunner = { command: geminiResolved.command, argsTemplate: geminiResolved.argsTemplate };
+  console.log(`[jclaw] gemini command resolved: ${geminiResolved.command} (${geminiResolved.source})`);
+  const claudeResolved = await resolveClaudeRunner(config.claudeCommand, config.claudeArgsTemplate);
+  resolvedClaudeRunner = { command: claudeResolved.command, argsTemplate: claudeResolved.argsTemplate };
+  console.log(`[jclaw] claude command resolved: ${claudeResolved.command} (${claudeResolved.source})`);
 
   const bot = new Telegraf(config.telegramBotToken, { handlerTimeout: 600000 });
   attachHandlers(bot, resolved.command);
@@ -1104,6 +1176,8 @@ export async function startTelegramBot(): Promise<void> {
     { command: "log", description: "Toggle interaction logging" },
     { command: "plan", description: "Toggle plan mode" },
     { command: "reason", description: "Set reasoning effort" },
+    { command: "model", description: "Set model override" },
+    { command: "models", description: "Show model arguments" },
     { command: "slot", description: "Manage slot bindings" },
     { command: "cron", description: "Manage scheduled prompts" },
     { command: "status", description: "Admin bot status" },

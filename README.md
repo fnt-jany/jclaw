@@ -1,6 +1,6 @@
 # jclaw (TypeScript)
 
-jclaw shares Codex sessions across Telegram, Windows CLI, Web, and a Cron worker.
+jclaw shares LLM sessions across Telegram, Windows CLI, Web, and a Cron worker.
 
 ## Install
 
@@ -18,7 +18,6 @@ Main `.env` values:
 
 - `TELEGRAM_BOT_TOKEN`: from BotFather
 - `ALLOWED_CHAT_IDS`: allowed chat ids (comma-separated)
-- `ADMIN_CHAT_IDS`: admin chat ids for `/admin` command (comma-separated, empty => fallback to allowed ids)
 - `DATA_FILE`: interaction log JSON path (`./data/interactions.json`)
 - `DB_FILE`: SQLite file path (default `./data/jclaw.db`)
 - `CODEX_COMMAND`, `CODEX_ARGS_TEMPLATE`, `CODEX_WORKDIR`
@@ -28,7 +27,16 @@ Main `.env` values:
 
 `CODEX_COMMAND=auto` tries PATH first, then VS Code extension paths on Windows.
 
+## Entry Points
+
+- `src/main/web.ts`: web process entry
+- `src/main/telegram.ts`: telegram process entry
+- `src/main/cli.ts`: cli entry (`oneshot`/`chat`)
+- `src/main/cron.ts`: cron entry (`worker`/`cli`)
+- `src/main/tools.ts`: ops tools entry (`slots`)
+
 ## Run Channels
+
 
 - Telegram bot: `npm run dev`
 - CLI one-shot: `npm run cli -- [--chat <chat_id>] [--session <A-Z|id|prefix>] "prompt"`
@@ -49,18 +57,18 @@ Runtime commands:
 
 - `/slot list`
 - `/slot show <A-Z>`
-- `/slot bind <A-Z> <codex_session_id>`
+- `/slot bind <A-Z> <thread_id>`
 
-Admin CLI:
+Ops CLI:
 
 ```powershell
-npm run admin:slots -- list --chat <chat_id>
-npm run admin:slots -- bind --chat <chat_id> --slot J --codex <codex_session_id>
-npm run admin:slots -- export --chat <chat_id> --out data/manual-slot-bindings.json
-npm run admin:slots -- import --file data/manual-slot-bindings.json
+npm run ops:slots -- list --chat <chat_id>
+npm run ops:slots -- bind --chat <chat_id> --slot J --thread <thread_id> [--provider <provider>]
+npm run ops:slots -- export --chat <chat_id> --out data/manual-slot-bindings.json
+npm run ops:slots -- import --file data/manual-slot-bindings.json
 ```
 
-`data/manual-slot-bindings.json` lets you edit slot?codex mapping manually and re-import.
+`data/manual-slot-bindings.json` lets you edit slot-provider-thread mapping manually and re-import.
 
 ## Common Slash Commands
 
@@ -74,7 +82,7 @@ npm run admin:slots -- import --file data/manual-slot-bindings.json
 - `/plan <on|off|status>`
 - `/cron ...`
 - `/slot ...`
-- `/admin <status|restart>`
+- `/status` / `/restart`
 
 ## Storage
 
@@ -97,7 +105,7 @@ git commit -m "chore: bootstrap jclaw"
 
 ## Telegram Restart Ops
 
-Use `/admin restart` from an admin chat to restart the bot process.
+Use `/restart` from an allowed chat to restart the bot process.
 Run the bot under PM2 so it auto-recovers after exit:
 
 ```powershell
@@ -112,4 +120,6 @@ npm run pm2:telegram:restart
 npm run pm2:telegram:stop
 npm run pm2:telegram:logs
 ```
+
+
 

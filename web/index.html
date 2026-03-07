@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>jclaw web</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%231f6feb'/%3E%3Ctext x='50%25' y='52%25' dominant-baseline='middle' text-anchor='middle' font-family='Arial' font-size='34' fill='white'%3EJ%3C/text%3E%3C/svg%3E" />
   <style>
     :root {
       --bg: #f3efe7;
@@ -26,11 +27,103 @@
       margin: 0;
       color: var(--ink);
       background: radial-gradient(circle at top right, #ffe7d1, transparent 45%), var(--bg);
-      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      font-family: "IBM Plex Sans", "Pretendard", "Segoe UI", sans-serif;
       min-height: 100vh;
-      display: grid;
-      place-items: center;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 14px;
+      padding: 16px;
+    }
+
+    .intro {
+      width: min(980px, 100%);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background:
+        radial-gradient(circle at 8% 18%, rgba(21, 73, 165, 0.14), transparent 48%),
+        radial-gradient(circle at 92% 0%, rgba(255, 132, 42, 0.12), transparent 40%),
+        linear-gradient(135deg, #ffffff 0%, #f7fbff 45%, #fff8ee 100%);
+      box-shadow: 0 14px 34px rgba(0, 0, 0, 0.08);
       padding: 18px;
+      display: grid;
+      gap: 14px;
+      animation: intro-fade 520ms ease-out;
+    }
+
+    .intro-headline {
+      margin: 0;
+      font-family: "Space Grotesk", "IBM Plex Sans", sans-serif;
+      font-size: clamp(26px, 4vw, 40px);
+      line-height: 1.08;
+      letter-spacing: -0.02em;
+      max-width: 18ch;
+    }
+
+    .intro-sub {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.55;
+      max-width: 70ch;
+      font-size: 15px;
+    }
+
+    .intro-emphasis {
+      color: #0d3b86;
+      font-weight: 700;
+    }
+
+    .intro-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .intro-card {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.9);
+      padding: 12px;
+      display: grid;
+      gap: 6px;
+      min-height: 116px;
+    }
+
+    .intro-card h3 {
+      margin: 0;
+      font-size: 15px;
+      letter-spacing: -0.01em;
+    }
+
+    .intro-card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .intro-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .intro-tags span {
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid #bcd0f8;
+      background: #ecf3ff;
+      color: #1e429f;
+      border-radius: 999px;
+      padding: 5px 10px;
+      font-size: 12px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    @keyframes intro-fade {
+      from { transform: translateY(8px); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
     }
 
     .app {
@@ -43,6 +136,7 @@
       grid-template-rows: auto auto 1fr auto;
       overflow: hidden;
       box-shadow: 0 16px 36px rgba(0, 0, 0, 0.08);
+      position: relative;
     }
 
     .top {
@@ -64,6 +158,7 @@
     .status {
       color: var(--muted);
       font-size: 13px;
+      white-space: pre-line;
     }
 
     .top-actions {
@@ -93,13 +188,18 @@
     .tab {
       border: 1px solid var(--line);
       border-radius: 10px;
-      padding: 8px 0;
+      padding: 6px 4px;
       background: var(--tab);
       color: var(--ink);
       font: inherit;
       font-weight: 600;
       cursor: pointer;
       transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+      display: grid;
+      gap: 2px;
+      justify-items: center;
+      align-content: center;
+      min-height: 48px;
     }
 
     .tab:hover {
@@ -111,6 +211,26 @@
       background: var(--tab-active);
       color: #fff;
       border-color: var(--tab-active);
+    }
+
+    .tab-slot {
+      font-size: 13px;
+      line-height: 1;
+      font-weight: 700;
+    }
+
+    .tab-nick {
+      font-size: 10px;
+      line-height: 1.1;
+      color: var(--muted);
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .tab.active .tab-nick {
+      color: rgba(255, 255, 255, 0.88);
     }
 
     .slot-nav {
@@ -259,6 +379,25 @@
       font-weight: 600;
     }
 
+
+    .jump-latest {
+      position: absolute;
+      right: 14px;
+      bottom: 86px;
+      z-index: 3;
+      border-radius: 999px;
+      padding: 8px 12px;
+      box-shadow: 0 8px 18px rgba(0, 0, 0, 0.14);
+      font-size: 13px;
+      display: none;
+    }
+
+    .jump-latest.show {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
     .hidden {
       display: none !important;
     }
@@ -276,7 +415,16 @@
     @media (max-width: 720px) {
       body {
         padding: 10px;
-        place-items: stretch;
+        align-items: stretch;
+      }
+
+      .intro {
+        width: 100%;
+        padding: 14px;
+      }
+
+      .intro-grid {
+        grid-template-columns: 1fr;
       }
 
       .app {
@@ -384,6 +532,37 @@
     </div>
   </section>
 
+  <section class="intro">
+    <h1 class="intro-headline">Jclaw, AI 툴을 활용한 개인형 비서 서비스</h1>
+    <p class="intro-sub">
+      Jclaw는 Codex, Gemini 같은 AI CLI를 하나의 워크플로우로 묶어
+      <span class="intro-emphasis">개인 업무를 자동화·기록·추적</span>하는 개인형 비서입니다.
+      채팅만 하는 도구가 아니라, 장기 작업 실행·파일 처리·스케줄링까지 실제 일을 끝내는 데 초점을 맞췄습니다.
+    </p>
+    <div class="intro-grid">
+      <article class="intro-card">
+        <h3>멀티 AI 세션 운용</h3>
+        <p>슬롯(A-Z) 단위로 provider와 thread를 분리해 동시 작업을 안전하게 관리합니다.</p>
+      </article>
+      <article class="intro-card">
+        <h3>웹·텔레그램·CLI 연동</h3>
+        <p>동일 세션을 여러 채널에서 이어서 사용하고 상태를 중앙 저장소에 일관되게 유지합니다.</p>
+      </article>
+      <article class="intro-card">
+        <h3>실무형 자동화</h3>
+        <p>파일 첨부 처리, 장기 작업 큐, 크론 실행으로 반복 업무를 개인 비서처럼 위임할 수 있습니다.</p>
+      </article>
+    </div>
+    <div class="intro-tags">
+      <span>Personal AI Assistant</span>
+      <span>Multi-Provider Runtime</span>
+      <span>Persistent Session Memory</span>
+      <span>Long Job Queue</span>
+      <span>Attachment Workflow</span>
+      <span>Cron Automation</span>
+    </div>
+  </section>
+
   <main id="app" class="app hidden">
     <section class="top">
       <div class="brand">jclaw web</div>
@@ -400,6 +579,7 @@
     </section>
 
     <section id="log"></section>
+    <button id="jumpLatestBtn" type="button" class="jump-latest">Back to latest</button>
 
     <form id="composer" class="composer">
       <input id="fileInput" type="file" />
@@ -418,6 +598,7 @@
     const googleButtonEl = document.getElementById('googleButton');
     const devLoginFormEl = document.getElementById('devLoginForm');
     const devPasswordEl = document.getElementById('devPassword');
+    const devLoginSubmitEl = devLoginFormEl.querySelector('button[type="submit"]');
 
     const statusEl = document.getElementById('status');
     const logoutBtnEl = document.getElementById('logoutBtn');
@@ -425,6 +606,7 @@
     const slotPrevEl = document.getElementById('slotPrev');
     const slotNextEl = document.getElementById('slotNext');
     const logEl = document.getElementById('log');
+    const jumpLatestBtnEl = document.getElementById('jumpLatestBtn');
     const fileInputEl = document.getElementById('fileInput');
     const messageEl = document.getElementById('message');
     const composerEl = document.getElementById('composer');
@@ -434,20 +616,45 @@
     const SLOT_PAGE_STARTS = [0, 8, 16, 24];
     const HISTORY_LIMIT = 120;
     const API_BASE = String(window.JCLAW_API_BASE || '').replace(/\/$/, '');
-    const IS_MOBILE_KEYBOARD =
-      window.matchMedia('(pointer: coarse)').matches ||
-      /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+    const IS_COARSE_POINTER = window.matchMedia('(pointer: coarse)').matches;
+    let viewportHeightBaseline = window.visualViewport?.height ?? window.innerHeight;
     let slotPageStart = 0;
     let currentSlot = '';
 
     const sessionLogs = new Map();
+    const sessionNickBySlot = new Map();
     const hydratedSlots = new Set();
     const hydratingSlots = new Map();
     const sessionInputState = new Map();
     const activeJobStreams = new Map();
     const pendingBubbleByJob = new Map();
     const syncingPendingSlots = new Set();
+    let autoScrollLocked = false;
+    let unseenMessageCount = 0;
 
+
+    function refreshViewportBaseline() {
+      const current = window.visualViewport?.height ?? window.innerHeight;
+      if (!Number.isFinite(current) || current <= 0) {
+        return;
+      }
+      if (document.activeElement === messageEl) {
+        return;
+      }
+      viewportHeightBaseline = Math.max(viewportHeightBaseline, current);
+    }
+
+    function isLikelySoftKeyboardVisible() {
+      if (!IS_COARSE_POINTER) {
+        return false;
+      }
+      if (document.activeElement !== messageEl) {
+        return false;
+      }
+      const current = window.visualViewport?.height ?? window.innerHeight;
+      const delta = viewportHeightBaseline - current;
+      return delta > 120;
+    }
 
     function sessionKey(slot) {
       return slot || '_default';
@@ -461,8 +668,34 @@
       return sessionLogs.get(key);
     }
 
+    function isLogNearBottom() {
+      const distance = logEl.scrollHeight - (logEl.scrollTop + logEl.clientHeight);
+      return distance <= 40;
+    }
+
+    function scrollLogToBottom() {
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function updateJumpLatestButton() {
+      const visible = autoScrollLocked || unseenMessageCount > 0;
+      jumpLatestBtnEl.classList.toggle('show', visible);
+      jumpLatestBtnEl.textContent = unseenMessageCount > 0 ? `New messages (${unseenMessageCount})` : 'Back to latest';
+    }
+
+    function resetAutoScrollState(forceBottom = false) {
+      autoScrollLocked = false;
+      unseenMessageCount = 0;
+      updateJumpLatestButton();
+      if (forceBottom) {
+        requestAnimationFrame(scrollLogToBottom);
+      }
+    }
+
     function renderCurrentLog() {
       const rows = getSessionLog(currentSlot);
+      const prevTop = logEl.scrollTop;
+      const shouldAutoScroll = !autoScrollLocked && isLogNearBottom();
       logEl.innerHTML = '';
       for (const row of rows) {
         const div = document.createElement('div');
@@ -470,21 +703,37 @@
         div.textContent = row.text;
         logEl.appendChild(div);
       }
-      logEl.scrollTop = logEl.scrollHeight;
+      if (shouldAutoScroll) {
+        scrollLogToBottom();
+      } else {
+        logEl.scrollTop = prevTop;
+      }
+      updateJumpLatestButton();
     }
 
     function appendBubble(text, type = 'bot', slot = currentSlot) {
-      const row = { text, type, slot };
+      const row = { text, type, slot, _unseenMarked: false };
       getSessionLog(slot).push(row);
       if (slot === currentSlot) {
+        if (autoScrollLocked) {
+          unseenMessageCount += 1;
+          row._unseenMarked = true;
+        }
         renderCurrentLog();
       }
       return row;
     }
 
     function updateBubble(row, patch) {
+      const prevText = row.text;
       Object.assign(row, patch);
       if (row.slot === currentSlot) {
+        const becameFinal = (patch.type === 'bot' || patch.type === 'err') && !row._unseenMarked;
+        const changedMeaningfully = typeof patch.text === 'string' && patch.text !== prevText && !patch.text.startsWith('processing');
+        if (autoScrollLocked && (becameFinal || changedMeaningfully)) {
+          unseenMessageCount += 1;
+          row._unseenMarked = true;
+        }
         renderCurrentLog();
       }
     }
@@ -567,6 +816,17 @@ ${row.error}` : '']
       appEl.classList.add('hidden');
     }
 
+    function applyDevLoginLockState(locked) {
+      const isLocked = Boolean(locked);
+      devPasswordEl.disabled = isLocked;
+      if (devLoginSubmitEl) {
+        devLoginSubmitEl.disabled = isLocked;
+      }
+      devPasswordEl.placeholder = isLocked
+        ? 'Developer login is locked. Restart required.'
+        : 'Admin password';
+    }
+
     function showApp() {
       authOverlayEl.classList.add('hidden');
       appEl.classList.remove('hidden');
@@ -615,7 +875,18 @@ ${row.error}` : '']
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = `tab${slot === currentSlot ? ' active' : ''}`;
-        btn.textContent = slot;
+
+        const slotLabel = document.createElement('span');
+        slotLabel.className = 'tab-slot';
+        slotLabel.textContent = slot;
+
+        const nickLabel = document.createElement('span');
+        nickLabel.className = 'tab-nick';
+        const nick = (sessionNickBySlot.get(slot) || '').trim() || '-';
+        nickLabel.textContent = nick;
+
+        btn.appendChild(slotLabel);
+        btn.appendChild(nickLabel);
         btn.disabled = slot === currentSlot;
         btn.addEventListener('click', () => {
           void switchSession(slot);
@@ -628,12 +899,27 @@ ${row.error}` : '']
     }
 
     function applyState(data, options = { adoptCurrent: true }) {
+      const prevSlot = currentSlot;
       if (options.adoptCurrent) {
         currentSlot = data.sessionSlot;
       }
+      if (prevSlot !== currentSlot) {
+        resetAutoScrollState(true);
+      }
       const authText = data.auth ? ` | auth=${data.auth.method}:${data.auth.email}` : '';
       const statusSlot = currentSlot || data.sessionSlot;
-      setStatus(`slot=${statusSlot} | session=${data.sessionName} | log=${data.logEnabled ? 'ON' : 'OFF'}${authText}`);
+      if (data.slotNicks && typeof data.slotNicks === 'object') {
+        for (const [slot, nickValue] of Object.entries(data.slotNicks)) {
+          if (typeof nickValue === 'string') {
+            sessionNickBySlot.set(slot, nickValue);
+          }
+        }
+      }
+      if (typeof data.sessionNick === 'string') {
+        sessionNickBySlot.set(statusSlot, data.sessionNick);
+      }
+      const nick = (sessionNickBySlot.get(statusSlot) || '').trim() || '-';
+      setStatus(`slot=${statusSlot} | session=${data.sessionName}\nnick=${nick} | log=${data.logEnabled ? 'ON' : 'OFF'}${authText}`);
       renderSessionTabs(options.adoptCurrent);
       renderCurrentLog();
       applyInputState(statusSlot);
@@ -922,6 +1208,10 @@ ${row.error}` : '']
           } else {
             showAuth(String(data.error || 'Login failed.'));
           }
+
+          if (res.status === 423) {
+            applyDevLoginLockState(true);
+          }
           return;
         }
 
@@ -966,11 +1256,30 @@ ${row.error}` : '']
       resizeMessageInput();
     });
 
+    logEl.addEventListener('scroll', () => {
+      if (isLogNearBottom()) {
+        if (autoScrollLocked || unseenMessageCount > 0) {
+          resetAutoScrollState(false);
+        }
+        return;
+      }
+      autoScrollLocked = true;
+      updateJumpLatestButton();
+    });
+
+    jumpLatestBtnEl.addEventListener('click', () => {
+      resetAutoScrollState(false);
+      scrollLogToBottom();
+    });
+
     messageEl.addEventListener('keydown', (e) => {
       const state = getInputState();
 
-      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
-        if (IS_MOBILE_KEYBOARD) {
+      if (e.key === 'Enter' && !e.isComposing) {
+        if (e.shiftKey) {
+          return;
+        }
+        if (isLikelySoftKeyboardVisible() && !e.ctrlKey && !e.metaKey) {
           return;
         }
         e.preventDefault();
@@ -1020,6 +1329,7 @@ ${row.error}` : '']
 
     composerEl.addEventListener('submit', async (e) => {
       e.preventDefault();
+      const wasAtBottom = isLogNearBottom();
       const rawText = messageEl.value;
       const text = rawText.trim();
       const file = fileInputEl.files && fileInputEl.files[0] ? fileInputEl.files[0] : null;
@@ -1045,6 +1355,10 @@ ${row.error}` : '']
       fileInputEl.value = '';
       resizeMessageInput();
       const pending = appendBubble('processing...', 'bot', slotAtSend);
+      if (wasAtBottom) {
+        resetAutoScrollState(false);
+        requestAnimationFrame(scrollLogToBottom);
+      }
       let dots = 0;
       const ticker = setInterval(() => {
         dots = (dots + 1) % 4;
@@ -1101,6 +1415,9 @@ ${row.error}` : '']
       closeAllJobStreams();
     });
 
+    window.addEventListener('resize', refreshViewportBaseline);
+    window.visualViewport?.addEventListener('resize', refreshViewportBaseline);
+
     async function ensureAuth() {
       try {
         const status = await api('/api/auth/status', { method: 'GET', headers: {} });
@@ -1109,6 +1426,11 @@ ${row.error}` : '']
           return;
         }
         setupGoogleLogin(status);
+        applyDevLoginLockState(status.devPasswordLocked);
+        if (status.devPasswordLocked) {
+          showAuth('Developer login is locked after 3 failed attempts. Restart server to unlock.');
+          return;
+        }
         showAuth('');
       } catch (err) {
         showAuth(String(err));

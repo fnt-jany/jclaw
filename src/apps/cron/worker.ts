@@ -2,9 +2,12 @@ import dotenv from "dotenv";
 import path from "node:path";
 import { loadConfig } from "../../core/config/env";
 import { SessionStore } from "../../core/session/sessionStore";
-import { runCodex } from "../../core/codex/runner";
-import { applyPlanModePrompt } from "../../core/codex/promptMode";
-import { resolveCodexCommand } from "../../core/commands/resolver";
+import { runLlm } from "../../core/llm/execute";
+import { resolveRunnerForSession } from "../../core/llm/router";
+import { applyPlanModePrompt } from "../../core/llm/promptMode";
+import { resolveCodexCommand } from "../../core/commands/codexResolver";
+import { resolveGeminiRunner } from "../../core/commands/geminiResolver";
+import { resolveClaudeRunner } from "../../core/commands/claudeResolver";
 import { InteractionLogger } from "../../core/logging/interactionLogger";
 import { CronJob, CronStore } from "../../core/cron/store";
 import { sendCronTelegramNotification } from "../../core/telegram/notify";
@@ -22,6 +25,8 @@ const interactionLogger = new InteractionLogger(interactionLogPath);
 const runningJobs = new Set<string>();
 
 let codexCommandResolved = "";
+let geminiRunnerResolved = { command: "", argsTemplate: "" };
+let claudeRunnerResolved = { command: "", argsTemplate: "" };
 
 async function notifyCronResult(input: {
   job: CronJob;
@@ -97,20 +102,37 @@ async function executeJob(jobId: string): Promise<void> {
     const planMode = sessionStore.getPlanMode(session.id);
     const effectivePrompt = applyPlanModePrompt(job.prompt, planMode);
 
-    const result = await runCodex({
-      codexCommand: codexCommandResolved,
-      codexArgsTemplate: config.codexArgsTemplate,
+    const runner = resolveRunnerForSession(session, config, codexCommandResolved, geminiRunnerResolved, claudeRunnerResolved);
+    const startedAt = Date.now();
+    const logChunk = (stream: "stdout" | "stderr", chunk: string): void => {
+      const single = chunk.replace(/\r?\n/g, "\\n").trim();
+      if (!single) {
+        return;
+      }
+      const clipped = single.length > 260 ? `${single.slice(0, 260)}...[+${single.length - 260} chars]` : single;
+      const elapsedSec = Math.floor((Date.now() - startedAt) / 1000);
+      console.log(`[jclaw-cron] chunk job=${job.id} slot=${session.shortId} session=${session.id} elapsed=${elapsedSec}s stream=${stream} msg=${clipped}`);
+    };
+
+    const result = await runLlm({
+      codexCommand: runner.command,
+      codexArgsTemplate: runner.argsTemplate,
       prompt: effectivePrompt,
       sessionId: session.id,
-      codexSessionId: session.codexSessionId,
+      threadId: session.threadId,
       timeoutMs: config.codexTimeoutMs,
       workdir: config.codexWorkdir,
       codexNodeOptions: config.codexNodeOptions,
-      reasoningEffort: sessionStore.getReasoningEffort(session.id)
+      reasoningEffort: sessionStore.getReasoningEffort(session.id),
+      provider: runner.provider,
+      modelOverride: sessionStore.getSessionModelOverride(session.id),
+      onStdoutChunk: (chunk) => logChunk("stdout", chunk),
+      onStderrChunk: (chunk) => logChunk("stderr", chunk)
     });
 
-    if (result.codexSessionId && result.codexSessionId !== session.codexSessionId) {
-      sessionStore.setCodexSessionId(session.id, result.codexSessionId);
+    const resolvedThreadId = result.threadId;
+    if (resolvedThreadId && resolvedThreadId !== session.threadId) {
+      sessionStore.setSessionThread(session.id, runner.provider, resolvedThreadId);
     }
 
     sessionStore.appendRun(session.id, {
@@ -178,6 +200,12 @@ export async function startCronWorker(): Promise<void> {
 
   const resolved = await resolveCodexCommand(config.codexCommand);
   codexCommandResolved = resolved.command;
+  const geminiResolved = await resolveGeminiRunner(config.geminiCommand, config.geminiArgsTemplate);
+  geminiRunnerResolved = { command: geminiResolved.command, argsTemplate: geminiResolved.argsTemplate };
+  console.log(`[cron] gemini command resolved: ${geminiResolved.command} (${geminiResolved.source})`);
+  const claudeResolved = await resolveClaudeRunner(config.claudeCommand, config.claudeArgsTemplate);
+  claudeRunnerResolved = { command: claudeResolved.command, argsTemplate: claudeResolved.argsTemplate };
+  console.log(`[cron] claude command resolved: ${claudeResolved.command} (${claudeResolved.source})`);
 
   console.log(`[cron] worker started; poll=${pollMs}ms notify=${config.cronNotifyTelegram ? "on" : "off"}`);
   await tick();
