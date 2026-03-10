@@ -537,7 +537,7 @@
     <p class="intro-sub">
       Jclaw는 Codex, Gemini 같은 AI CLI를 하나의 워크플로우로 묶어
       <span class="intro-emphasis">개인 업무를 자동화·기록·추적</span>하는 개인형 비서입니다.
-      채팅만 하는 도구가 아니라, 장기 작업 실행·파일 처리·스케줄링까지 실제 일을 끝내는 데 초점을 맞췄습니다.
+      채팅만 하는 도구가 아니라, 장기 작업 실행·파일 처리·스케줄링까지 실제 일을 끝내는 데 초점을 맞춥니다.
     </p>
     <div class="intro-grid">
       <article class="intro-card">
@@ -842,6 +842,7 @@ ${row.error}` : '']
     }
 
     async function api(path, options = {}) {
+      const method = String(options.method || 'GET').toUpperCase();
       const res = await fetch(apiUrl(path), {
         ...options,
         credentials: 'include',
@@ -850,9 +851,20 @@ ${row.error}` : '']
           ...(options.headers || {})
         }
       });
-      const data = await res.json().catch(() => ({}));
+
+      const rawText = await res.text().catch(() => '');
+      let data = {};
+      try {
+        data = rawText ? JSON.parse(rawText) : {};
+      } catch {
+        data = {};
+      }
+
       if (!res.ok) {
-        throw new Error(data.error || 'request failed');
+        const detail = typeof data.error === 'string' && data.error.trim()
+          ? data.error.trim()
+          : (rawText || '').trim().replace(/\s+/g, ' ').slice(0, 220) || 'request failed';
+        throw new Error(`${detail} (${method} ${path}, status=${res.status})`);
       }
       return data;
     }

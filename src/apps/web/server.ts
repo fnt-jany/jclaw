@@ -81,6 +81,7 @@ const WEB_ALLOWED_ORIGINS = new Set(
 const WEB_UPLOAD_DIR = path.join(dataDir, "web_uploads");
 const WEB_UPLOAD_MAX_FILES = Math.max(1, Number(process.env.WEB_UPLOAD_MAX_FILES ?? "50") || 50);
 const WEB_UPLOAD_MAX_BYTES = Math.max(1024 * 1024, Number(process.env.WEB_UPLOAD_MAX_BYTES ?? String(15 * 1024 * 1024)) || 15 * 1024 * 1024);
+const WEB_REQUEST_MAX_BYTES = Math.max(2 * 1024 * 1024, Math.ceil(WEB_UPLOAD_MAX_BYTES * 1.5) + 16 * 1024);
 
 const WEB_ALLOWED_EMAILS = new Set(
   (process.env.WEB_ALLOWED_EMAILS ?? "")
@@ -480,8 +481,8 @@ async function readBody(req: IncomingMessage): Promise<string> {
     let data = "";
     req.on("data", (chunk) => {
       data += String(chunk);
-      if (data.length > 1024 * 1024) {
-        reject(new Error("Body too large"));
+      if (data.length > WEB_REQUEST_MAX_BYTES) {
+        reject(new Error(`Body too large (max ${WEB_REQUEST_MAX_BYTES} bytes)`));
       }
     });
     req.on("end", () => resolve(data));
