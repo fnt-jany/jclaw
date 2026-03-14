@@ -514,6 +514,54 @@ function buildSlotNickMap(chatId: string): Record<string, string> {
   return out;
 }
 
+const KST_TIME_ZONE = "Asia/Seoul";
+const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
+
+function parseKstDateRange(fromDateRaw: string, toDateRaw: string): { fromDate: string; toDate: string; startIso: string; endIsoExclusive: string } {
+  const fromDate = fromDateRaw.trim();
+  const toDate = toDateRaw.trim();
+  const pattern = /^\d{4}-\d{2}-\d{2}$/;
+
+  if (!pattern.test(fromDate) || !pattern.test(toDate)) {
+    throw new Error("fromDate and toDate must use YYYY-MM-DD.");
+  }
+
+  const startIso = kstDateStartToIso(fromDate);
+  const endStartIso = kstDateStartToIso(toDate);
+  const startMs = Date.parse(startIso);
+  const endStartMs = Date.parse(endStartIso);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endStartMs)) {
+    throw new Error("Invalid date range.");
+  }
+  if (endStartMs < startMs) {
+    throw new Error("toDate must be the same as or after fromDate.");
+  }
+
+  return {
+    fromDate,
+    toDate,
+    startIso,
+    endIsoExclusive: new Date(endStartMs + 24 * 60 * 60 * 1000).toISOString()
+  };
+}
+
+function kstDateStartToIso(value: string): string {
+  const [yearRaw, monthRaw, dayRaw] = value.split("-");
+  const year = Number(yearRaw);
+  const month = Number(monthRaw);
+  const day = Number(dayRaw);
+  const utcMs = Date.UTC(year, month - 1, day, 0, 0, 0, 0) - KST_OFFSET_MS;
+  const date = new Date(utcMs + KST_OFFSET_MS);
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() + 1 !== month ||
+    date.getUTCDate() !== day
+  ) {
+    throw new Error("Invalid date.");
+  }
+  return new Date(utcMs).toISOString();
+}
+
 function buildReplyWithHeaders(
   session: Session,
   interactionId: number | null,
@@ -1587,6 +1635,8 @@ async function handleApiSessionHistory(req: IncomingMessage, res: ServerResponse
   const slot = (url.searchParams.get("slot") ?? "").trim().toUpperCase();
   const limitRaw = Number(url.searchParams.get("limit") ?? "60");
   const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(300, Math.floor(limitRaw))) : 60;
+  const fromDate = (url.searchParams.get("fromDate") ?? "").trim();
+  const toDate = (url.searchParams.get("toDate") ?? "").trim();
 
   const chatId = WEB_CHAT_ID;
   if (!ensureAllowed(chatId)) {
@@ -1604,18 +1654,30 @@ async function handleApiSessionHistory(req: IncomingMessage, res: ServerResponse
     }
 
     if (!session) {
-      json(res, 200, { slot, sessionName: null, items: [] });
+      json(res, 200, { slot, sessionName: null, sessionNick: "", items: [] });
       return;
     }
 
-    const rows = store.listHistory(session.id, limit);
+    let rows;
+    let range: { fromDate: string; toDate: string; startIso: string; endIsoExclusive: string } | null = null;
+    if (fromDate || toDate) {
+      range = parseKstDateRange(fromDate || toDate, toDate || fromDate);
+      rows = store.listHistoryByTimeRange(session.id, range.startIso, range.endIsoExclusive);
+    } else {
+      rows = store.listHistory(session.id, limit);
+    }
+
     json(res, 200, {
       slot: session.shortId,
       sessionName: session.id,
+      sessionNick: getSessionNick(session),
+      timezone: KST_TIME_ZONE,
+      fromDate: range?.fromDate ?? null,
+      toDate: range?.toDate ?? null,
       items: rows
     });
   } catch (err) {
-    json(res, 500, { error: String(err) });
+    json(res, 400, { error: err instanceof Error ? err.message : String(err) });
   }
 }
 

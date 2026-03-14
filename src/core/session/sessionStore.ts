@@ -421,13 +421,7 @@ export class SessionStore {
   }
 
   listHistory(sessionId: string, limit = 10): RunRecord[] {
-    const exists = this.db
-      .prepare("SELECT 1 as ok FROM sessions WHERE id = ?")
-      .get(sessionId) as { ok: number } | undefined;
-
-    if (!exists) {
-      throw new Error(`Session not found: ${sessionId}`);
-    }
+    this.ensureSessionExists(sessionId);
 
     const rows = this.db
       .prepare(
@@ -458,6 +452,50 @@ export class SessionStore {
         exitCode: row.exit_code,
         durationMs: row.duration_ms
       }));
+  }
+
+  listHistoryByTimeRange(sessionId: string, startIso: string, endIso: string, limit = 5000): RunRecord[] {
+    this.ensureSessionExists(sessionId);
+
+    const rows = this.db
+      .prepare(
+        `SELECT id, timestamp, input, output, error, exit_code, duration_ms
+         FROM run_history
+         WHERE session_id = ?
+           AND timestamp >= ?
+           AND timestamp < ?
+         ORDER BY timestamp ASC
+         LIMIT ?`
+      )
+      .all(sessionId, startIso, endIso, Math.max(1, limit)) as Array<{
+      id: string;
+      timestamp: string;
+      input: string;
+      output: string;
+      error: string | null;
+      exit_code: number | null;
+      duration_ms: number;
+    }>;
+
+    return rows.map((row) => ({
+      id: row.id,
+      timestamp: row.timestamp,
+      input: row.input,
+      output: row.output,
+      error: row.error,
+      exitCode: row.exit_code,
+      durationMs: row.duration_ms
+    }));
+  }
+
+  private ensureSessionExists(sessionId: string): void {
+    const exists = this.db
+      .prepare("SELECT 1 as ok FROM sessions WHERE id = ?")
+      .get(sessionId) as { ok: number } | undefined;
+
+    if (!exists) {
+      throw new Error(`Session not found: ${sessionId}`);
+    }
   }
 
   private allocateNextSlot(chatId: string): SlotId {

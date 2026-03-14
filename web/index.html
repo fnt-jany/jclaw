@@ -133,13 +133,14 @@
       border: 1px solid var(--line);
       border-radius: 16px;
       display: grid;
-      grid-template-rows: auto auto 1fr auto;
+      grid-template-rows: auto auto auto 1fr auto;
       overflow: hidden;
       box-shadow: 0 16px 36px rgba(0, 0, 0, 0.08);
       position: relative;
     }
 
     .top {
+      grid-row: 1;
       display: flex;
       justify-content: space-between;
       align-items: center;
@@ -168,6 +169,7 @@
     }
 
     .tabs-wrap {
+      grid-row: 2;
       display: grid;
       grid-template-columns: auto minmax(0, 1fr) auto;
       gap: 6px;
@@ -238,13 +240,64 @@
       padding: 8px 10px;
     }
 
+    .save-log-panel {
+      grid-row: 3;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, auto));
+      gap: 6px;
+      align-items: end;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--line);
+      background: #fffdf7;
+    }
+
+    .save-log-title {
+      grid-column: 1 / -1;
+      font-size: 12px;
+      color: var(--muted);
+      font-weight: 600;
+      line-height: 1.2;
+    }
+
+    .field-group {
+      display: grid;
+      gap: 4px;
+      min-width: 140px;
+    }
+
+    .field-group label {
+      font-size: 12px;
+      color: var(--muted);
+      font-weight: 600;
+    }
+
+    .field-group input {
+      width: 100%;
+      min-width: 0;
+      background: #fff;
+    }
+
+    .save-log-actions {
+      display: flex;
+      gap: 8px;
+      margin-left: auto;
+    }
+
+    #saveLogToggleBtn,
+    #saveLogBtn,
+    #saveLogCancelBtn {
+      white-space: nowrap;
+    }
+
     #log {
+      grid-row: 4;
       overflow: auto;
       padding: 14px;
       display: grid;
       gap: 10px;
       align-content: start;
       background: linear-gradient(180deg, #fffbf3 0%, #f9fdf9 100%);
+      min-height: 0;
     }
 
     .bubble {
@@ -275,6 +328,7 @@
     }
 
     .composer {
+      grid-row: 5;
       display: grid;
       grid-template-columns: minmax(130px, 180px) minmax(0, 1fr) auto;
       gap: 8px;
@@ -282,6 +336,9 @@
       border-top: 1px solid var(--line);
       background: #fff;
       align-items: end;
+      position: sticky;
+      bottom: 0;
+      z-index: 2;
     }
 
     #fileInput {
@@ -419,8 +476,7 @@
       }
 
       .intro {
-        width: 100%;
-        padding: 14px;
+        display: none;
       }
 
       .intro-grid {
@@ -433,7 +489,20 @@
         max-height: none;
         min-height: 0;
         overflow: hidden;
-        grid-template-rows: auto auto minmax(0, 1fr) auto;
+        grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+      }
+
+      .top {
+        padding: 10px 12px;
+        gap: 6px;
+      }
+
+      .brand {
+        font-size: 14px;
+      }
+
+      .status {
+        font-size: 12px;
       }
 
       #log {
@@ -443,7 +512,7 @@
       }
 
       .tabs-wrap {
-        padding: 8px;
+        padding: 6px;
         gap: 4px;
       }
 
@@ -465,6 +534,7 @@
         grid-template-areas:
           "file file"
           "message send";
+        padding: 8px 8px calc(8px + env(safe-area-inset-bottom));
       }
 
       #fileInput {
@@ -484,6 +554,35 @@
       .top-actions {
         width: 100%;
         justify-content: space-between;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .top-actions button {
+        padding: 7px 10px;
+      }
+
+      .save-log-panel {
+        grid-template-columns: 1fr;
+        min-width: 0;
+        width: 100%;
+        padding: 8px;
+        gap: 6px;
+      }
+
+      .field-group {
+        min-width: 0;
+        flex: 1 1 140px;
+      }
+
+      .save-log-actions {
+        width: 100%;
+        margin-left: 0;
+      }
+
+      #saveLogBtn,
+      #saveLogCancelBtn {
+        width: 100%;
       }
     }
 
@@ -493,7 +592,7 @@
       }
 
       .app {
-        height: calc(100dvh - 12px);
+        height: 100dvh;
       }
 
       .tabs {
@@ -568,6 +667,7 @@
       <div class="brand">jclaw web</div>
       <div class="top-actions">
         <div id="status" class="status">connecting...</div>
+        <button id="saveLogToggleBtn" type="button" class="btn-muted">Save Log</button>
         <button id="logoutBtn" type="button" class="btn-muted">Logout</button>
       </div>
     </section>
@@ -577,6 +677,24 @@
       <section id="sessionTabs" class="tabs"></section>
       <button id="slotNext" type="button" class="btn-muted slot-nav">Next</button>
     </section>
+
+
+    <section id="saveLogPanel" class="save-log-panel hidden">
+      <div id="saveLogTitle" class="save-log-title">Save log for current slot</div>
+      <div class="field-group">
+        <label for="saveFromDate">From</label>
+        <input id="saveFromDate" type="date" />
+      </div>
+      <div class="field-group">
+        <label for="saveToDate">To</label>
+        <input id="saveToDate" type="date" />
+      </div>
+      <div class="save-log-actions">
+        <button id="saveLogBtn" type="button">Download</button>
+        <button id="saveLogCancelBtn" type="button" class="btn-muted">Close</button>
+      </div>
+    </section>
+
 
     <section id="log"></section>
     <button id="jumpLatestBtn" type="button" class="jump-latest">Back to latest</button>
@@ -607,6 +725,13 @@
     const slotNextEl = document.getElementById('slotNext');
     const logEl = document.getElementById('log');
     const jumpLatestBtnEl = document.getElementById('jumpLatestBtn');
+    const saveLogToggleBtnEl = document.getElementById('saveLogToggleBtn');
+    const saveLogPanelEl = document.getElementById('saveLogPanel');
+    const saveLogTitleEl = document.getElementById('saveLogTitle');
+    const saveFromDateEl = document.getElementById('saveFromDate');
+    const saveToDateEl = document.getElementById('saveToDate');
+    const saveLogBtnEl = document.getElementById('saveLogBtn');
+    const saveLogCancelBtnEl = document.getElementById('saveLogCancelBtn');
     const fileInputEl = document.getElementById('fileInput');
     const messageEl = document.getElementById('message');
     const composerEl = document.getElementById('composer');
@@ -963,6 +1088,123 @@ ${row.error}` : '']
       });
     }
 
+
+    function getKstDateString(date = new Date()) {
+      const formatter = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Seoul',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+      });
+      return formatter.format(date);
+    }
+
+    function getKstDateTimeString(isoText) {
+      const date = new Date(isoText);
+      if (!Number.isFinite(date.getTime())) {
+        return isoText;
+      }
+      const formatter = new Intl.DateTimeFormat('sv-SE', {
+        timeZone: 'Asia/Seoul',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+      });
+      return `${formatter.format(date)} KST`;
+    }
+
+    function ensureSaveDateDefaults() {
+      const today = getKstDateString();
+      if (!saveFromDateEl.value) {
+        saveFromDateEl.value = today;
+      }
+      if (!saveToDateEl.value) {
+        saveToDateEl.value = today;
+      }
+    }
+
+
+    function setSaveLogPanelVisible(visible) {
+      saveLogPanelEl.classList.toggle('hidden', !visible);
+      saveLogToggleBtnEl.classList.toggle('hidden', visible);
+      if (visible) {
+        ensureSaveDateDefaults();
+        saveLogTitleEl.textContent = `Save log for slot ${currentSlot || '-'}${(sessionNickBySlot.get(currentSlot) || '').trim() ? ` (${sessionNickBySlot.get(currentSlot).trim()})` : ''}`;
+        saveFromDateEl.focus();
+      }
+    }
+
+    function buildSessionLogText(data) {
+      const rows = Array.isArray(data.items) ? data.items : [];
+      const header = [
+        'Jclaw Session Log',
+        `Slot: ${data.slot || currentSlot || '-'}`,
+        `Session: ${data.sessionName || '-'}`,
+        `Nickname: ${(data.sessionNick || '').trim() || '-'}`,
+        `Timezone: ${data.timezone || 'Asia/Seoul'}`,
+        `Range: ${data.fromDate || '-'} ~ ${data.toDate || '-'}`,
+        `SavedAt: ${getKstDateTimeString(new Date().toISOString())}`,
+        `Count: ${rows.length}`
+      ];
+
+      const body = rows.map((row, index) => {
+        const parts = [
+          `#${index + 1} | ${getKstDateTimeString(row.timestamp)}`,
+          '[USER]',
+          String(row.input || '').trim() || '(empty)',
+          '',
+          '[ASSISTANT]',
+          String(row.output || '').trim() || '(no output)'
+        ];
+        if (row.error) {
+          parts.push('', '[ERROR]', String(row.error).trim());
+        }
+        if (row.exitCode !== null || row.durationMs !== null) {
+          parts.push('', `[META] exit=${row.exitCode ?? '-'} durationMs=${row.durationMs ?? '-'}`);
+        }
+        return parts.join('\n');
+      }).join('\n\n' + '-'.repeat(64) + '\n\n');
+
+      return `${header.join('\n')}\n\n${body || '(no records in range)'}\n`;
+    }
+
+    function downloadTextFile(fileName, content) {
+      const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = fileName;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    async function saveCurrentSessionLog() {
+      ensureSaveDateDefaults();
+      const fromDate = saveFromDateEl.value;
+      const toDate = saveToDateEl.value;
+      if (!fromDate || !toDate) {
+        throw new Error('Select both dates.');
+      }
+      if (toDate < fromDate) {
+        throw new Error('To date must be the same as or after From date.');
+      }
+
+      const data = await api(`/api/session-history?slot=${encodeURIComponent(currentSlot)}&fromDate=${encodeURIComponent(fromDate)}&toDate=${encodeURIComponent(toDate)}`, {
+        method: 'GET',
+        headers: {}
+      });
+      const safeNick = ((data.sessionNick || '').trim() || 'session').replace(/[^a-zA-Z0-9_-]+/g, '-').slice(0, 32);
+      const fileName = `jclaw-${String(data.slot || currentSlot || 'slot').toLowerCase()}-${safeNick}-${fromDate}_to_${toDate}.txt`;
+      downloadTextFile(fileName, buildSessionLogText(data));
+      appendBubble(`[saved] ${fileName}`, 'bot', currentSlot);
+    }
+
     async function sendMessage(text, options = { adoptCurrent: true }) {
       const data = await api('/api/chat', {
         method: 'POST',
@@ -1284,6 +1526,24 @@ ${row.error}` : '']
       scrollLogToBottom();
     });
 
+
+    saveLogToggleBtnEl.addEventListener('click', () => {
+      setSaveLogPanelVisible(true);
+    });
+
+    saveLogCancelBtnEl.addEventListener('click', () => {
+      setSaveLogPanelVisible(false);
+    });
+
+    saveLogBtnEl.addEventListener('click', async () => {
+      try {
+        await saveCurrentSessionLog();
+        setSaveLogPanelVisible(false);
+      } catch (err) {
+        appendBubble(String(err), 'err', currentSlot);
+      }
+    });
+
     messageEl.addEventListener('keydown', (e) => {
       const state = getInputState();
 
@@ -1416,6 +1676,7 @@ ${row.error}` : '']
 
     async function bootstrapApp() {
       try {
+        ensureSaveDateDefaults();
         await fetchState();
         showApp();
       } catch (err) {
