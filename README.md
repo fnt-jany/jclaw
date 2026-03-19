@@ -8,6 +8,68 @@ jclaw shares LLM sessions across Telegram, Windows CLI, Web, and a Cron worker.
 npm install
 ```
 
+## Ubuntu VM Setup (Codex First)
+
+If you want to run jclaw on an Ubuntu VM, install and authenticate `codex` first.
+`jclaw` does not perform OpenAI OAuth itself. It launches the `codex` CLI, so the Linux user that runs `jclaw` must already be logged in to `codex`.
+
+Recommended order:
+
+1. SSH into the VM as the same Linux user that will run `pm2` or `systemd`
+2. Install Node.js and basic packages
+3. Install `@openai/codex`
+4. Run `codex login --device-auth`
+5. Confirm `codex login status`
+6. Clone and configure `jclaw`
+7. Run `jclaw` under the same Linux user
+
+Example setup on Ubuntu:
+
+```bash
+ssh -i ~/.ssh/your-key.pem ubuntu@<VM_IP>
+sudo apt update
+sudo apt install -y curl git build-essential nginx
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt install -y nodejs
+sudo npm install -g @openai/codex pm2
+codex --version
+codex login --device-auth
+codex login status
+```
+
+Important:
+
+- `codex` credentials are stored per Linux user
+- if you log in as `ubuntu` but run `pm2` as `root` or another user, `jclaw` will not see that login
+- complete `codex login` as the same user that will run `jclaw`
+
+Then install `jclaw`:
+
+```bash
+git clone <repo-url> /srv/apps/jclaw
+cd /srv/apps/jclaw
+cp .env.example .env
+npm install
+npm run build
+```
+
+Minimal checks before starting channels:
+
+```bash
+codex exec "reply with ok only"
+npm run web
+npm run dev
+```
+
+For process management on Ubuntu, PM2 is the simplest starting point:
+
+```bash
+pm2 start ecosystem.web.cjs
+pm2 start ecosystem.telegram.cjs
+pm2 save
+pm2 startup
+```
+
 ## Configure
 
 ```powershell
