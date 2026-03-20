@@ -37,5 +37,5 @@ export async function resolveCodexCommand(input: string): Promise<{ command: str
     return { command: fromVsCode, source: "vscode-extension" };
   }
 
-  throw new Error("Could not locate codex executable. Set CODEX_COMMAND to an absolute codex.exe path in .env.");
+  throw new Error("Could not locate codex executable. Set CODEX_COMMAND to an absolute path in .env.");
 }

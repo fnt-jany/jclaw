@@ -17,8 +17,10 @@ export function isPathLike(command: string): boolean {
 }
 
 export async function runWhere(command: string): Promise<string | null> {
+  const locator = process.platform === "win32" ? "where.exe" : "which";
+
   return new Promise((resolve) => {
-    const child = spawn("where.exe", [command], {
+    const child = spawn(locator, [command], {
       windowsHide: true,
       stdio: ["ignore", "pipe", "ignore"]
     });
@@ -41,6 +43,11 @@ export async function runWhere(command: string): Promise<string | null> {
         .find(Boolean);
       if (!firstLine) {
         resolve(null);
+        return;
+      }
+
+      if (process.platform !== "win32") {
+        resolve(firstLine);
         return;
       }
 
@@ -101,3 +108,4 @@ export async function findNewestExecutableInVsCodeExtensions(options: {
   existing.sort((a, b) => b.mtimeMs - a.mtimeMs);
   return existing[0].candidate;
 }
+
