@@ -36,7 +36,9 @@ type GeminiSessionRow = {
   id: string;
 };
 
-const DEFAULT_CODEX_MODEL = (process.env.CODEX_DEFAULT_MODEL ?? "gpt-5.4").trim() || "gpt-5.4";
+function getDefaultCodexModel(): string {
+  return (process.env.CODEX_DEFAULT_MODEL ?? "gpt-5.4").trim() || "gpt-5.4";
+}
 
 function extractCodexSessionId(stdout: string, stderr: string): string | null {
   const joined = `${stdout}\n${stderr}`;
@@ -231,7 +233,7 @@ function buildArgs(input: RunLlmProcessInput, prompt: string): { args: string[];
     .replaceAll("{thread_id}", resolvedThreadId ?? "");
 
   const parsed = parseArgsStringToArgv(argsString);
-  const modelOverride = (input.modelOverride ?? "").trim() || (provider === "codex" ? DEFAULT_CODEX_MODEL : "");
+  const modelOverride = (input.modelOverride ?? "").trim() || (provider === "codex" ? getDefaultCodexModel() : "");
 
   const applyModelOverride = (args: string[]): string[] => {
     if (!modelOverride) {

@@ -97,6 +97,7 @@ const chatJobSubscribers = new Map<string, Set<ServerResponse>>();
 const CHAT_JOB_MAX = Math.max(200, Number(process.env.WEB_CHAT_JOB_MAX ?? "2000") || 2000);
 const CHAT_JOB_WORKERS = Math.max(1, Number(process.env.WEB_CHAT_JOB_WORKERS ?? "1") || 1);
 const CHAT_SSE_HEARTBEAT_MS = Math.max(10000, Number(process.env.WEB_CHAT_SSE_HEARTBEAT_MS ?? "15000") || 15000);
+const WEB_CHAT_RESUME_INCOMPLETE_JOBS = !["0", "false", "no", "off"].includes((process.env.WEB_CHAT_RESUME_INCOMPLETE_JOBS ?? "true").trim().toLowerCase());
 let activeJobWorkers = 0;
 let devPasswordFailedAttempts = 0;
 let devPasswordLocked = false;
@@ -1770,7 +1771,7 @@ export async function startWebServer(): Promise<void> {
   await store.init();
   await interactionLogger.init();
   await cronStore.init();
-  await chatJobStore.init();
+  await chatJobStore.init({ resumeIncompleteJobs: WEB_CHAT_RESUME_INCOMPLETE_JOBS });
   await loadServerLabel();
 
   const resolved = await resolveCodexCommand(config.codexCommand);

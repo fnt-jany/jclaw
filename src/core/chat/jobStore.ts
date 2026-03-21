@@ -34,17 +34,35 @@ export class ChatJobStore {
     this.db = openDb(dbFile);
   }
 
-  async init(): Promise<void> {
+  async init(options?: { resumeIncompleteJobs?: boolean }): Promise<void> {
+    const now = new Date().toISOString();
+    const resumeIncompleteJobs = options?.resumeIncompleteJobs ?? true;
+
+    if (resumeIncompleteJobs) {
+      this.db
+        .prepare(
+          `UPDATE chat_jobs
+           SET status = 'pending',
+               updated_at = ?,
+               started_at = NULL,
+               error = NULL
+           WHERE status = 'running'`
+        )
+        .run(now);
+      return;
+    }
+
+    const restartError = 'Marked failed after restart because WEB_CHAT_RESUME_INCOMPLETE_JOBS=false';
     this.db
       .prepare(
         `UPDATE chat_jobs
-         SET status = 'pending',
+         SET status = 'failed',
              updated_at = ?,
-             started_at = NULL,
-             error = NULL
-         WHERE status = 'running'`
+             finished_at = ?,
+             error = ?
+         WHERE status IN ('pending', 'running')`
       )
-      .run(new Date().toISOString());
+      .run(now, now, restartError);
   }
 
   createPending(input: { chatId: string; sessionId: string; sessionSlot: string; prompt: string }): ChatJobRecord {
