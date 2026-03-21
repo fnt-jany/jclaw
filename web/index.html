@@ -151,9 +151,21 @@
       flex-wrap: wrap;
     }
 
+    .brand-wrap {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
     .brand {
       font-weight: 700;
       letter-spacing: 0.2px;
+    }
+
+    .brand-edit {
+      padding: 6px 10px;
+      font-size: 12px;
     }
 
     .status {
@@ -664,7 +676,7 @@
 
   <main id="app" class="app hidden">
     <section class="top">
-      <div id="brand" class="brand">jclaw web</div>
+      <div class="brand-wrap"><div id="brand" class="brand">jclaw web</div><button id="serverLabelEditBtn" type="button" class="btn-muted brand-edit">Edit</button></div>
       <div class="top-actions">
         <div id="status" class="status">connecting...</div>
         <button id="saveLogToggleBtn" type="button" class="btn-muted">Save Log</button>
@@ -720,6 +732,7 @@
 
     const authTitleEl = document.getElementById('authTitle');
     const brandEl = document.getElementById('brand');
+    const serverLabelEditBtnEl = document.getElementById('serverLabelEditBtn');
     const statusEl = document.getElementById('status');
     const logoutBtnEl = document.getElementById('logoutBtn');
     const sessionTabsEl = document.getElementById('sessionTabs');
@@ -1538,6 +1551,23 @@ ${row.error}` : '']
       scrollLogToBottom();
     });
 
+
+    serverLabelEditBtnEl.addEventListener('click', async () => {
+      const next = window.prompt('Server label', serverLabel);
+      if (next === null) {
+        return;
+      }
+
+      try {
+        const data = await api('/api/server-label', {
+          method: 'POST',
+          body: JSON.stringify({ label: next })
+        });
+        applyServerLabel(data.serverLabel);
+      } catch (err) {
+        appendBubble(String(err), 'err', currentSlot);
+      }
+    });
 
     saveLogToggleBtnEl.addEventListener('click', () => {
       setSaveLogPanelVisible(true);

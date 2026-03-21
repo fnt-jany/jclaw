@@ -38,7 +38,9 @@ let claudeRunnerResolved = { command: "", argsTemplate: "" };
 
 const WEB_PORT = Number(process.env.JCLAW_WEB_PORT ?? "3100");
 const WEB_HOST = process.env.JCLAW_WEB_HOST ?? "127.0.0.1";
-const WEB_SERVER_LABEL = (process.env.JCLAW_SERVER_LABEL ?? process.env.HOSTNAME ?? "local").trim() || "local";
+const DEFAULT_WEB_SERVER_LABEL = (process.env.JCLAW_SERVER_LABEL ?? process.env.HOSTNAME ?? "local").trim() || "local";
+const WEB_SERVER_LABEL_PATH = path.join(dataDir, "server-label.txt");
+let webServerLabel = DEFAULT_WEB_SERVER_LABEL;
 
 type ChatAttachment = {
   fileName?: string;
@@ -98,6 +100,31 @@ const CHAT_SSE_HEARTBEAT_MS = Math.max(10000, Number(process.env.WEB_CHAT_SSE_HE
 let activeJobWorkers = 0;
 let devPasswordFailedAttempts = 0;
 let devPasswordLocked = false;
+
+function normalizeServerLabel(value: string): string {
+  return value.trim().slice(0, 40) || DEFAULT_WEB_SERVER_LABEL;
+}
+
+function getServerLabel(): string {
+  return webServerLabel;
+}
+
+async function loadServerLabel(): Promise<void> {
+  try {
+    const raw = await readFile(WEB_SERVER_LABEL_PATH, "utf8");
+    webServerLabel = normalizeServerLabel(raw);
+  } catch {
+    webServerLabel = DEFAULT_WEB_SERVER_LABEL;
+  }
+}
+
+async function saveServerLabel(value: string): Promise<string> {
+  const next = normalizeServerLabel(value);
+  await writeFile(WEB_SERVER_LABEL_PATH, `${next}
+`, "utf8");
+  webServerLabel = next;
+  return next;
+}
 
 function pruneExpiredWebAuthSessions(): void {
   const now = Date.now();
@@ -1479,7 +1506,7 @@ async function handleApiState(req: IncomingMessage, res: ServerResponse): Promis
     const { session, logEnabled } = getState(chatId);
     json(res, 200, {
       chatId,
-      serverLabel: WEB_SERVER_LABEL,
+      serverLabel: getServerLabel(),
       sessionSlot: session.shortId,
       sessionName: session.id,
       sessionNick: getSessionNick(session),
@@ -1495,11 +1522,39 @@ async function handleApiState(req: IncomingMessage, res: ServerResponse): Promis
   }
 }
 
+async function handleApiServerLabel(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = requireAuth(req, res);
+  if (!auth) {
+    return;
+  }
+
+  let payload: { label?: string };
+  try {
+    payload = JSON.parse(await readBody(req)) as { label?: string };
+  } catch (err) {
+    json(res, 400, { error: String(err) });
+    return;
+  }
+
+  const chatId = WEB_CHAT_ID;
+  if (!ensureAllowed(chatId)) {
+    json(res, 403, { error: "Access denied" });
+    return;
+  }
+
+  try {
+    const serverLabel = await saveServerLabel(String(payload.label ?? ""));
+    json(res, 200, { ok: true, serverLabel });
+  } catch (err) {
+    json(res, 500, { error: String(err) });
+  }
+}
+
 async function handleApiAuthStatus(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const session = getAuthSession(req);
   json(res, 200, {
     authenticated: Boolean(session),
-    serverLabel: WEB_SERVER_LABEL,
+    serverLabel: getServerLabel(),
     email: session?.email ?? null,
     method: session?.method ?? null,
     googleClientId: WEB_GOOGLE_CLIENT_ID || null,
@@ -1716,6 +1771,7 @@ export async function startWebServer(): Promise<void> {
   await interactionLogger.init();
   await cronStore.init();
   await chatJobStore.init();
+  await loadServerLabel();
 
   const resolved = await resolveCodexCommand(config.codexCommand);
   codexCommandResolved = resolved.command;
@@ -1768,6 +1824,11 @@ export async function startWebServer(): Promise<void> {
       return;
     }
 
+    if (req.method === "POST" && pathname === "/api/server-label") {
+      await handleApiServerLabel(req, res);
+      return;
+    }
+
     if (req.method === "GET" && pathname === "/api/state") {
       await handleApiState(req, res);
       return;
@@ -1814,3 +1875,4 @@ export async function startWebServer(): Promise<void> {
 if (require.main === module) {
   void startWebServer();
 }
+
