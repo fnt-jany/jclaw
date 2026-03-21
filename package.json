@@ -5,7 +5,7 @@
   "main": "dist/main/telegram.js",
   "scripts": {
     "test": "npm run build",
-    "build": "npm run -s clean && node scripts/write-build-info.cjs && tsc -p tsconfig.json",
+    "build": "npm run -s clean && tsc -p tsconfig.json",
     "start": "node dist/main/telegram.js",
     "dev": "tsx src/main/telegram.ts",
     "cli": "tsx src/main/cli.ts",
@@ -18,7 +18,16 @@
     "pm2:telegram:stop": "pm2 stop jclaw-telegram",
     "pm2:telegram:logs": "pm2 logs jclaw-telegram",
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
-    "ops:slots": "tsx src/main/tools.ts slots"
+    "ops:slots": "tsx src/main/tools.ts slots",
+    "write:build-info": "node scripts/write-build-info.cjs",
+    "prebuild": "npm run -s write:build-info",
+    "prestart": "npm run -s write:build-info",
+    "predev": "npm run -s write:build-info",
+    "preweb": "npm run -s write:build-info",
+    "precli": "npm run -s write:build-info",
+    "prechat": "npm run -s write:build-info",
+    "precron:worker": "npm run -s write:build-info",
+    "precron:cli": "npm run -s write:build-info"
   },
   "keywords": [],
   "author": "",
