@@ -38,6 +38,7 @@ let claudeRunnerResolved = { command: "", argsTemplate: "" };
 
 const WEB_PORT = Number(process.env.JCLAW_WEB_PORT ?? "3100");
 const WEB_HOST = process.env.JCLAW_WEB_HOST ?? "127.0.0.1";
+const WEB_SERVER_LABEL = (process.env.JCLAW_SERVER_LABEL ?? process.env.HOSTNAME ?? "local").trim() || "local";
 
 type ChatAttachment = {
   fileName?: string;
@@ -1478,6 +1479,7 @@ async function handleApiState(req: IncomingMessage, res: ServerResponse): Promis
     const { session, logEnabled } = getState(chatId);
     json(res, 200, {
       chatId,
+      serverLabel: WEB_SERVER_LABEL,
       sessionSlot: session.shortId,
       sessionName: session.id,
       sessionNick: getSessionNick(session),
@@ -1497,6 +1499,7 @@ async function handleApiAuthStatus(req: IncomingMessage, res: ServerResponse): P
   const session = getAuthSession(req);
   json(res, 200, {
     authenticated: Boolean(session),
+    serverLabel: WEB_SERVER_LABEL,
     email: session?.email ?? null,
     method: session?.method ?? null,
     googleClientId: WEB_GOOGLE_CLIENT_ID || null,

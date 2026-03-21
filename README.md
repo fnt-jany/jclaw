@@ -89,6 +89,30 @@ Main `.env` values:
 
 `CODEX_COMMAND=auto` tries PATH first, then VS Code extension paths on Windows.
 
+## Web Auth Cookie Notes
+
+For direct HTTP access during initial VM setup, use:
+
+```env
+WEB_ALLOWED_ORIGINS=http://<VM_IP>:3100
+WEB_AUTH_COOKIE_SAMESITE=Lax
+WEB_AUTH_COOKIE_SECURE=false
+```
+
+Meaning:
+
+- `WEB_AUTH_COOKIE_SECURE`: send the auth cookie only over HTTPS when `true`; for direct `http://<VM_IP>:3100` testing keep it `false`
+- `WEB_AUTH_COOKIE_SAMESITE`: cookie cross-site policy; `Lax` is the safest default for direct browser access
+- `WEB_ALLOWED_ORIGINS`: must exactly match the browser origin, including protocol and port
+
+For a real HTTPS domain later, switch to:
+
+```env
+WEB_ALLOWED_ORIGINS=https://your-domain.example
+WEB_AUTH_COOKIE_SAMESITE=Lax
+WEB_AUTH_COOKIE_SECURE=true
+```
+
 ## Entry Points
 
 - `src/main/web.ts`: web process entry

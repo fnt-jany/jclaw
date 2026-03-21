@@ -611,7 +611,7 @@
 <body>
   <section id="authOverlay" class="auth-overlay hidden">
     <div class="auth-card">
-      <div class="auth-title">Sign in required</div>
+      <div id="authTitle" class="auth-title">Sign in required</div>
       <div class="auth-desc">Sign in with an approved Google account to access this web console.</div>
 
       <div id="googleRow" class="auth-row hidden">
@@ -664,7 +664,7 @@
 
   <main id="app" class="app hidden">
     <section class="top">
-      <div class="brand">jclaw web</div>
+      <div id="brand" class="brand">jclaw web</div>
       <div class="top-actions">
         <div id="status" class="status">connecting...</div>
         <button id="saveLogToggleBtn" type="button" class="btn-muted">Save Log</button>
@@ -718,6 +718,8 @@
     const devPasswordEl = document.getElementById('devPassword');
     const devLoginSubmitEl = devLoginFormEl.querySelector('button[type="submit"]');
 
+    const authTitleEl = document.getElementById('authTitle');
+    const brandEl = document.getElementById('brand');
     const statusEl = document.getElementById('status');
     const logoutBtnEl = document.getElementById('logoutBtn');
     const sessionTabsEl = document.getElementById('sessionTabs');
@@ -745,6 +747,7 @@
     let viewportHeightBaseline = window.visualViewport?.height ?? window.innerHeight;
     let slotPageStart = 0;
     let currentSlot = '';
+    let serverLabel = 'local';
 
     const sessionLogs = new Map();
     const sessionNickBySlot = new Map();
@@ -865,6 +868,14 @@
 
     function setStatus(s) {
       statusEl.textContent = s;
+    }
+
+    function applyServerLabel(nextLabel) {
+      const normalized = String(nextLabel || '').trim() || 'local';
+      serverLabel = normalized;
+      document.title = `jclaw | ${normalized}`;
+      brandEl.textContent = `jclaw web | ${normalized}`;
+      authTitleEl.textContent = `Sign in to ${normalized}`;
     }
 
     function resizeMessageInput() {
@@ -1036,6 +1047,7 @@ ${row.error}` : '']
     }
 
     function applyState(data, options = { adoptCurrent: true }) {
+      applyServerLabel(data.serverLabel);
       const prevSlot = currentSlot;
       if (options.adoptCurrent) {
         currentSlot = data.sessionSlot;
@@ -1694,6 +1706,7 @@ ${row.error}` : '']
     async function ensureAuth() {
       try {
         const status = await api('/api/auth/status', { method: 'GET', headers: {} });
+        applyServerLabel(status.serverLabel);
         if (status.authenticated) {
           await bootstrapApp();
           return;
