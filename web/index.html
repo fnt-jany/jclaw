@@ -178,6 +178,86 @@
       display: flex;
       gap: 8px;
       align-items: center;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .tool-stack {
+      display: flex;
+      gap: 4px;
+      align-items: flex-start;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .codex-admin {
+      display: grid;
+      gap: 4px;
+      justify-items: end;
+      min-width: 0;
+    }
+
+    .codex-version {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.1;
+      text-align: right;
+      white-space: nowrap;
+    }
+
+    .codex-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .codex-progress {
+      max-width: min(420px, 100%);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff;
+      padding: 8px 10px;
+      display: grid;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .codex-progress-line {
+      line-height: 1.35;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .codex-progress-line.error {
+      color: #b42318;
+    }
+
+    .codex-progress-line.success {
+      color: #18794e;
+    }
+
+    .btn-update {
+      border: 1px solid transparent;
+      color: #fff;
+      font-weight: 700;
+      box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12);
+    }
+
+    .btn-update:disabled {
+      opacity: 0.6;
+      cursor: default;
+      box-shadow: none;
+    }
+
+    .btn-update-codex {
+      background: linear-gradient(135deg, #1f6feb, #1549a5);
+    }
+
+    .btn-update-claude {
+      background: linear-gradient(135deg, #e56b2e, #b54708);
     }
 
     .tabs-wrap {
@@ -570,6 +650,30 @@
         gap: 6px;
       }
 
+      .tool-stack {
+        width: 100%;
+        gap: 2px;
+      }
+
+      .codex-admin {
+        width: 100%;
+        gap: 2px;
+        justify-items: stretch;
+      }
+
+      .codex-version {
+        text-align: left;
+        white-space: normal;
+      }
+
+      .codex-actions {
+        justify-content: space-between;
+      }
+
+      .codex-progress {
+        max-width: 100%;
+      }
+
       .top-actions button {
         padding: 7px 10px;
       }
@@ -679,8 +783,24 @@
       <div class="brand-wrap"><div id="brand" class="brand">jclaw web</div><button id="serverLabelEditBtn" type="button" class="btn-muted brand-edit">Edit</button></div>
       <div class="top-actions">
         <div id="status" class="status">connecting...</div>
-        <button id="saveLogToggleBtn" type="button" class="btn-muted">Save Log</button>
-        <button id="logoutBtn" type="button" class="btn-muted">Logout</button>
+        <div class="tool-stack">
+          <div class="codex-admin">
+            <div id="codexVersionText" class="codex-version">Codex current=-</div>
+            <div class="codex-actions">
+              <button id="codexUpdateBtn" type="button" class="btn-update btn-update-codex hidden" disabled>Update Codex</button>
+            </div>
+            <div id="codexUpdateProgress" class="codex-progress hidden"></div>
+          </div>
+          <div class="codex-admin">
+            <div id="claudeVersionText" class="codex-version">Claude current=-</div>
+            <div class="codex-actions">
+              <button id="claudeUpdateBtn" type="button" class="btn-update btn-update-claude hidden" disabled>Update Claude</button>
+              <button id="saveLogToggleBtn" type="button" class="btn-muted">Save Log</button>
+              <button id="logoutBtn" type="button" class="btn-muted">Logout</button>
+            </div>
+            <div id="claudeUpdateProgress" class="codex-progress hidden"></div>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -734,6 +854,12 @@
     const brandEl = document.getElementById('brand');
     const serverLabelEditBtnEl = document.getElementById('serverLabelEditBtn');
     const statusEl = document.getElementById('status');
+    const codexVersionTextEl = document.getElementById('codexVersionText');
+    const codexUpdateBtnEl = document.getElementById('codexUpdateBtn');
+    const codexUpdateProgressEl = document.getElementById('codexUpdateProgress');
+    const claudeVersionTextEl = document.getElementById('claudeVersionText');
+    const claudeUpdateBtnEl = document.getElementById('claudeUpdateBtn');
+    const claudeUpdateProgressEl = document.getElementById('claudeUpdateProgress');
     const logoutBtnEl = document.getElementById('logoutBtn');
     const sessionTabsEl = document.getElementById('sessionTabs');
     const slotPrevEl = document.getElementById('slotPrev');
@@ -761,6 +887,46 @@
     let slotPageStart = 0;
     let currentSlot = '';
     let serverLabel = 'local';
+    let codexVersionLoaded = false;
+    let codexVersionState = {
+      currentVersion: null,
+      latestVersion: null,
+      updateAvailable: false,
+      checkedAt: '',
+      error: null
+    };
+    let codexUpdateState = {
+      running: false,
+      startedAt: null,
+      finishedAt: null,
+      success: null,
+      currentVersion: null,
+      latestVersion: null,
+      error: null,
+      logs: []
+    };
+    let codexUpdatePollTimer = null;
+    let codexVersionMarker = '';
+    let claudeVersionLoaded = false;
+    let claudeVersionState = {
+      currentVersion: null,
+      latestVersion: null,
+      updateAvailable: false,
+      checkedAt: '',
+      error: null
+    };
+    let claudeUpdateState = {
+      running: false,
+      startedAt: null,
+      finishedAt: null,
+      success: null,
+      currentVersion: null,
+      latestVersion: null,
+      error: null,
+      logs: []
+    };
+    let claudeUpdatePollTimer = null;
+    let claudeVersionMarker = '';
 
     const sessionLogs = new Map();
     const sessionNickBySlot = new Map();
@@ -801,6 +967,94 @@
       return slot || '_default';
     }
 
+    function getCodexVersionCheckMarker(auth) {
+      const email = auth && auth.email ? String(auth.email) : 'unknown';
+      const method = auth && auth.method ? String(auth.method) : 'unknown';
+      return `${serverLabel}:${method}:${email}`;
+    }
+
+    function persistCodexVersionCache() {
+      if (!codexVersionMarker) {
+        return;
+      }
+      sessionStorage.setItem('jclaw_codex_version_checked', codexVersionMarker);
+      sessionStorage.setItem('jclaw_codex_version_state', JSON.stringify({
+        marker: codexVersionMarker,
+        version: codexVersionState,
+        update: codexUpdateState
+      }));
+    }
+
+    function restoreCodexVersionCache(marker) {
+      const raw = sessionStorage.getItem('jclaw_codex_version_state');
+      if (!raw) {
+        return false;
+      }
+      try {
+        const parsed = JSON.parse(raw);
+        if (!parsed || parsed.marker !== marker) {
+          return false;
+        }
+        const cachedVersion = parsed.version || {};
+        const cachedUpdate = parsed.update || null;
+        if ((cachedVersion && cachedVersion.error) || (cachedUpdate && cachedUpdate.error)) {
+          return false;
+        }
+        applyCodexVersionStatus({
+          ...cachedVersion,
+          updateStatus: cachedUpdate
+        });
+        codexVersionLoaded = true;
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    function getClaudeVersionCheckMarker(auth) {
+      const email = auth && auth.email ? String(auth.email) : 'unknown';
+      const method = auth && auth.method ? String(auth.method) : 'unknown';
+      return `${serverLabel}:claude:${method}:${email}`;
+    }
+
+    function persistClaudeVersionCache() {
+      if (!claudeVersionMarker) {
+        return;
+      }
+      sessionStorage.setItem('jclaw_claude_version_checked', claudeVersionMarker);
+      sessionStorage.setItem('jclaw_claude_version_state', JSON.stringify({
+        marker: claudeVersionMarker,
+        version: claudeVersionState,
+        update: claudeUpdateState
+      }));
+    }
+
+    function restoreClaudeVersionCache(marker) {
+      const raw = sessionStorage.getItem('jclaw_claude_version_state');
+      if (!raw) {
+        return false;
+      }
+      try {
+        const parsed = JSON.parse(raw);
+        if (!parsed || parsed.marker !== marker) {
+          return false;
+        }
+        const cachedVersion = parsed.version || {};
+        const cachedUpdate = parsed.update || null;
+        if ((cachedVersion && cachedVersion.error) || (cachedUpdate && cachedUpdate.error)) {
+          return false;
+        }
+        applyClaudeVersionStatus({
+          ...cachedVersion,
+          updateStatus: cachedUpdate
+        });
+        claudeVersionLoaded = true;
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
     function getSessionLog(slot) {
       const key = sessionKey(slot);
       if (!sessionLogs.has(key)) {
@@ -836,7 +1090,7 @@
     function renderCurrentLog() {
       const rows = getSessionLog(currentSlot);
       const prevTop = logEl.scrollTop;
-      const shouldAutoScroll = !autoScrollLocked && isLogNearBottom();
+      const shouldStickToBottom = !autoScrollLocked;
       logEl.innerHTML = '';
       for (const row of rows) {
         const div = document.createElement('div');
@@ -844,7 +1098,7 @@
         div.textContent = row.text;
         logEl.appendChild(div);
       }
-      if (shouldAutoScroll) {
+      if (shouldStickToBottom) {
         scrollLogToBottom();
       } else {
         logEl.scrollTop = prevTop;
@@ -889,6 +1143,281 @@
       document.title = `jclaw | ${normalized}`;
       brandEl.textContent = `jclaw web | ${normalized}`;
       authTitleEl.textContent = `Sign in to ${normalized}`;
+    }
+
+    function clearCodexUpdatePoll() {
+      if (codexUpdatePollTimer) {
+        clearTimeout(codexUpdatePollTimer);
+        codexUpdatePollTimer = null;
+      }
+    }
+
+    function formatCodexProgressLines(updateStatus) {
+      if (!updateStatus.running && updateStatus.success === true && !updateStatus.error) {
+        return [];
+      }
+      const lines = [];
+      if (updateStatus.running) {
+        lines.push({ level: 'info', message: 'Update running...' });
+      } else if (updateStatus.success === true) {
+        lines.push({ level: 'success', message: `Update finished at ${getKstDateTimeString(updateStatus.finishedAt || new Date().toISOString())}` });
+      } else if (updateStatus.success === false) {
+        lines.push({ level: 'error', message: `Update failed at ${getKstDateTimeString(updateStatus.finishedAt || new Date().toISOString())}` });
+      }
+
+      for (const row of Array.isArray(updateStatus.logs) ? updateStatus.logs.slice(-6) : []) {
+        const ts = row && row.ts ? getKstDateTimeString(row.ts) : '';
+        const prefix = ts ? `[${ts}] ` : '';
+        lines.push({ level: row.level || 'info', message: `${prefix}${row.message || ''}`.trim() });
+      }
+
+      if (updateStatus.error && !lines.some((line) => line.message.includes(updateStatus.error))) {
+        lines.push({ level: 'error', message: updateStatus.error });
+      }
+      return lines;
+    }
+
+    function renderCodexVersionPanel() {
+      const current = codexVersionState.currentVersion || '-';
+      const latest = codexVersionState.latestVersion || (codexVersionState.error ? 'error' : '-');
+      const updateAvailable = Boolean(codexVersionState.updateAvailable);
+      const versionText = updateAvailable || codexUpdateState.running
+        ? `Codex current=${current} | latest=${latest}`
+        : `Codex current=${current}`;
+      const suffix = codexVersionState.error ? ` | ${codexVersionState.error}` : '';
+      codexVersionTextEl.textContent = `${versionText}${suffix}`;
+
+      const showUpdateButton = codexUpdateState.running || updateAvailable;
+      codexUpdateBtnEl.classList.toggle('hidden', !showUpdateButton);
+      codexUpdateBtnEl.disabled = !updateAvailable || codexUpdateState.running || Boolean(codexVersionState.error);
+      codexUpdateBtnEl.textContent = codexUpdateState.running ? 'Updating...' : 'Update Codex';
+
+      const lines = formatCodexProgressLines(codexUpdateState);
+      codexUpdateProgressEl.innerHTML = '';
+      if (!lines.length) {
+        codexUpdateProgressEl.classList.add('hidden');
+      } else {
+        codexUpdateProgressEl.classList.remove('hidden');
+        for (const line of lines) {
+          const div = document.createElement('div');
+          div.className = `codex-progress-line ${line.level || 'info'}`;
+          div.textContent = line.message;
+          codexUpdateProgressEl.appendChild(div);
+        }
+      }
+    }
+
+    function applyCodexVersionStatus(data) {
+      codexVersionState = {
+        currentVersion: data.currentVersion ?? null,
+        latestVersion: data.latestVersion ?? null,
+        updateAvailable: Boolean(data.updateAvailable),
+        checkedAt: data.checkedAt || '',
+        error: data.error ?? null
+      };
+
+      if (data.updateStatus && typeof data.updateStatus === 'object') {
+        codexUpdateState = {
+          running: Boolean(data.updateStatus.running),
+          startedAt: data.updateStatus.startedAt ?? null,
+          finishedAt: data.updateStatus.finishedAt ?? null,
+          success: data.updateStatus.success ?? null,
+          currentVersion: data.updateStatus.currentVersion ?? codexVersionState.currentVersion,
+          latestVersion: data.updateStatus.latestVersion ?? codexVersionState.latestVersion,
+          error: data.updateStatus.error ?? null,
+          logs: Array.isArray(data.updateStatus.logs) ? data.updateStatus.logs : []
+        };
+      }
+
+      renderCodexVersionPanel();
+      persistCodexVersionCache();
+      if (codexUpdateState.running) {
+        scheduleCodexUpdatePoll();
+      } else {
+        clearCodexUpdatePoll();
+      clearClaudeUpdatePoll();
+      }
+    }
+
+    async function fetchCodexVersionStatus(force = false) {
+      if (codexVersionLoaded && !force) {
+        return codexVersionState;
+      }
+      const data = await api('/api/codex/version-status', { method: 'GET', headers: {} });
+      codexVersionLoaded = true;
+      applyCodexVersionStatus(data);
+      return data;
+    }
+
+    async function pollCodexUpdateStatus() {
+      try {
+        const data = await api('/api/codex/update-status', { method: 'GET', headers: {} });
+        applyCodexVersionStatus(data);
+      } catch (err) {
+        codexUpdateState = {
+          ...codexUpdateState,
+          running: false,
+          success: false,
+          error: String(err)
+        };
+        renderCodexVersionPanel();
+      }
+    }
+
+    function scheduleCodexUpdatePoll() {
+      clearCodexUpdatePoll();
+      codexUpdatePollTimer = setTimeout(async () => {
+        await pollCodexUpdateStatus();
+        if (codexUpdateState.running) {
+          scheduleCodexUpdatePoll();
+        }
+      }, 1500);
+    }
+
+    function clearClaudeUpdatePoll() {
+      if (claudeUpdatePollTimer) {
+        clearTimeout(claudeUpdatePollTimer);
+        claudeUpdatePollTimer = null;
+      }
+    }
+
+    function formatClaudeProgressLines(updateStatus) {
+      if (!updateStatus.running && updateStatus.success === true && !updateStatus.error) {
+        return [];
+      }
+      const lines = [];
+      if (updateStatus.running) {
+        lines.push({ level: 'info', message: 'Update running...' });
+      } else if (updateStatus.success === true) {
+        lines.push({ level: 'success', message: `Update finished at ${getKstDateTimeString(updateStatus.finishedAt || new Date().toISOString())}` });
+      } else if (updateStatus.success === false) {
+        lines.push({ level: 'error', message: `Update failed at ${getKstDateTimeString(updateStatus.finishedAt || new Date().toISOString())}` });
+      }
+
+      for (const row of Array.isArray(updateStatus.logs) ? updateStatus.logs.slice(-6) : []) {
+        const ts = row && row.ts ? getKstDateTimeString(row.ts) : '';
+        const prefix = ts ? `[${ts}] ` : '';
+        lines.push({ level: row.level || 'info', message: `${prefix}${row.message || ''}`.trim() });
+      }
+
+      if (updateStatus.error && !lines.some((line) => line.message.includes(updateStatus.error))) {
+        lines.push({ level: 'error', message: updateStatus.error });
+      }
+      return lines;
+    }
+
+    function renderClaudeVersionPanel() {
+      const current = claudeVersionState.currentVersion || '-';
+      const latest = claudeVersionState.latestVersion || (claudeVersionState.error ? 'error' : '-');
+      const updateAvailable = Boolean(claudeVersionState.updateAvailable);
+      const versionText = updateAvailable || claudeUpdateState.running
+        ? `Claude current=${current} | latest=${latest}`
+        : `Claude current=${current}`;
+      const suffix = claudeVersionState.error ? ` | ${claudeVersionState.error}` : '';
+      claudeVersionTextEl.textContent = `${versionText}${suffix}`;
+
+      const showUpdateButton = claudeUpdateState.running || updateAvailable;
+      claudeUpdateBtnEl.classList.toggle('hidden', !showUpdateButton);
+      claudeUpdateBtnEl.disabled = !updateAvailable || claudeUpdateState.running || Boolean(claudeVersionState.error);
+      claudeUpdateBtnEl.textContent = claudeUpdateState.running ? 'Updating...' : 'Update Claude';
+
+      const lines = formatClaudeProgressLines(claudeUpdateState);
+      claudeUpdateProgressEl.innerHTML = '';
+      if (!lines.length) {
+        claudeUpdateProgressEl.classList.add('hidden');
+      } else {
+        claudeUpdateProgressEl.classList.remove('hidden');
+        for (const line of lines) {
+          const div = document.createElement('div');
+          div.className = `codex-progress-line ${line.level || 'info'}`;
+          div.textContent = line.message;
+          claudeUpdateProgressEl.appendChild(div);
+        }
+      }
+    }
+
+    function syncCompactVersionLayout() {
+      const compact = !codexVersionState.updateAvailable
+        && !codexUpdateState.running
+        && !codexVersionState.error
+        && !claudeVersionState.updateAvailable
+        && !claudeUpdateState.running
+        && !claudeVersionState.error;
+
+      if (compact) {
+        codexVersionTextEl.textContent = `Codex ${codexVersionState.currentVersion || '-'} | Claude ${claudeVersionState.currentVersion || '-'}`;
+        claudeVersionTextEl.classList.add('hidden');
+        return;
+      }
+
+      claudeVersionTextEl.classList.remove('hidden');
+    }
+
+    function applyClaudeVersionStatus(data) {
+      claudeVersionState = {
+        currentVersion: data.currentVersion ?? null,
+        latestVersion: data.latestVersion ?? null,
+        updateAvailable: Boolean(data.updateAvailable),
+        checkedAt: data.checkedAt || '',
+        error: data.error ?? null
+      };
+
+      if (data.updateStatus && typeof data.updateStatus === 'object') {
+        claudeUpdateState = {
+          running: Boolean(data.updateStatus.running),
+          startedAt: data.updateStatus.startedAt ?? null,
+          finishedAt: data.updateStatus.finishedAt ?? null,
+          success: data.updateStatus.success ?? null,
+          currentVersion: data.updateStatus.currentVersion ?? claudeVersionState.currentVersion,
+          latestVersion: data.updateStatus.latestVersion ?? claudeVersionState.latestVersion,
+          error: data.updateStatus.error ?? null,
+          logs: Array.isArray(data.updateStatus.logs) ? data.updateStatus.logs : []
+        };
+      }
+
+      renderClaudeVersionPanel();
+      persistClaudeVersionCache();
+      if (claudeUpdateState.running) {
+        scheduleClaudeUpdatePoll();
+      } else {
+        clearClaudeUpdatePoll();
+      }
+      syncCompactVersionLayout();
+    }
+
+    async function fetchClaudeVersionStatus(force = false) {
+      if (claudeVersionLoaded && !force) {
+        return claudeVersionState;
+      }
+      const data = await api('/api/claude/version-status', { method: 'GET', headers: {} });
+      claudeVersionLoaded = true;
+      applyClaudeVersionStatus(data);
+      return data;
+    }
+
+    async function pollClaudeUpdateStatus() {
+      try {
+        const data = await api('/api/claude/update-status', { method: 'GET', headers: {} });
+        applyClaudeVersionStatus(data);
+      } catch (err) {
+        claudeUpdateState = {
+          ...claudeUpdateState,
+          running: false,
+          success: false,
+          error: String(err)
+        };
+        renderClaudeVersionPanel();
+      }
+    }
+
+    function scheduleClaudeUpdatePoll() {
+      clearClaudeUpdatePoll();
+      claudeUpdatePollTimer = setTimeout(async () => {
+        await pollClaudeUpdateStatus();
+        if (claudeUpdateState.running) {
+          scheduleClaudeUpdatePoll();
+        }
+      }, 1500);
     }
 
     function resizeMessageInput() {
@@ -1523,6 +2052,21 @@ ${row.error}` : '']
         await api('/api/auth/logout', { method: 'POST', body: '{}' });
       } catch {
       }
+      codexVersionLoaded = false;
+      sessionStorage.removeItem('jclaw_codex_version_checked');
+      sessionStorage.removeItem('jclaw_codex_version_state');
+      sessionStorage.removeItem('jclaw_claude_version_checked');
+      sessionStorage.removeItem('jclaw_claude_version_state');
+      codexVersionMarker = '';
+      claudeVersionMarker = '';
+      codexVersionState = { currentVersion: null, latestVersion: null, updateAvailable: false, checkedAt: '', error: null };
+      claudeVersionState = { currentVersion: null, latestVersion: null, updateAvailable: false, checkedAt: '', error: null };
+      codexUpdateState = { running: false, startedAt: null, finishedAt: null, success: null, currentVersion: null, latestVersion: null, error: null, logs: [] };
+      claudeUpdateState = { running: false, startedAt: null, finishedAt: null, success: null, currentVersion: null, latestVersion: null, error: null, logs: [] };
+      clearCodexUpdatePoll();
+      clearClaudeUpdatePoll();
+      renderCodexVersionPanel();
+      renderClaudeVersionPanel();
       showAuth('Logged out.');
       await ensureAuth();
     });
@@ -1566,6 +2110,46 @@ ${row.error}` : '']
         applyServerLabel(data.serverLabel);
       } catch (err) {
         appendBubble(String(err), 'err', currentSlot);
+      }
+    });
+
+    codexUpdateBtnEl.addEventListener('click', async () => {
+      codexUpdateBtnEl.disabled = true;
+      try {
+        const data = await api('/api/codex/update', {
+          method: 'POST',
+          body: '{}'
+        });
+        codexVersionLoaded = true;
+        applyCodexVersionStatus(data);
+      } catch (err) {
+        codexUpdateState = {
+          ...codexUpdateState,
+          running: false,
+          success: false,
+          error: String(err)
+        };
+        renderCodexVersionPanel();
+      }
+    });
+
+    claudeUpdateBtnEl.addEventListener('click', async () => {
+      claudeUpdateBtnEl.disabled = true;
+      try {
+        const data = await api('/api/claude/update', {
+          method: 'POST',
+          body: '{}'
+        });
+        claudeVersionLoaded = true;
+        applyClaudeVersionStatus(data);
+      } catch (err) {
+        claudeUpdateState = {
+          ...claudeUpdateState,
+          running: false,
+          success: false,
+          error: String(err)
+        };
+        renderClaudeVersionPanel();
       }
     });
 
@@ -1719,7 +2303,60 @@ ${row.error}` : '']
     async function bootstrapApp() {
       try {
         ensureSaveDateDefaults();
-        await fetchState();
+        const state = await fetchState();
+        const codexMarker = getCodexVersionCheckMarker(state.auth);
+        codexVersionMarker = codexMarker;
+        const checkedCodexMarker = sessionStorage.getItem('jclaw_codex_version_checked');
+        if (checkedCodexMarker !== codexMarker || !restoreCodexVersionCache(codexMarker)) {
+          try {
+            await fetchCodexVersionStatus(true);
+            persistCodexVersionCache();
+          } catch (err) {
+            codexVersionLoaded = true;
+            codexVersionState = {
+              currentVersion: null,
+              latestVersion: null,
+              updateAvailable: false,
+              checkedAt: new Date().toISOString(),
+              error: String(err)
+            };
+            codexUpdateState = {
+              ...codexUpdateState,
+              running: false,
+              success: false,
+              error: String(err)
+            };
+            renderCodexVersionPanel();
+            persistCodexVersionCache();
+          }
+        }
+
+        const claudeMarker = getClaudeVersionCheckMarker(state.auth);
+        claudeVersionMarker = claudeMarker;
+        const checkedClaudeMarker = sessionStorage.getItem('jclaw_claude_version_checked');
+        if (checkedClaudeMarker !== claudeMarker || !restoreClaudeVersionCache(claudeMarker)) {
+          try {
+            await fetchClaudeVersionStatus(true);
+            persistClaudeVersionCache();
+          } catch (err) {
+            claudeVersionLoaded = true;
+            claudeVersionState = {
+              currentVersion: null,
+              latestVersion: null,
+              updateAvailable: false,
+              checkedAt: new Date().toISOString(),
+              error: String(err)
+            };
+            claudeUpdateState = {
+              ...claudeUpdateState,
+              running: false,
+              success: false,
+              error: String(err)
+            };
+            renderClaudeVersionPanel();
+            persistClaudeVersionCache();
+          }
+        }
         showApp();
       } catch (err) {
         showAuth(String(err));
@@ -1728,10 +2365,14 @@ ${row.error}` : '']
 
     window.addEventListener('beforeunload', () => {
       closeAllJobStreams();
+      clearCodexUpdatePoll();
     });
 
     window.addEventListener('resize', refreshViewportBaseline);
     window.visualViewport?.addEventListener('resize', refreshViewportBaseline);
+
+    renderCodexVersionPanel();
+    renderClaudeVersionPanel();
 
     async function ensureAuth() {
       try {

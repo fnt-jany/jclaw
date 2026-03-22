@@ -1,5 +1,6 @@
 import dotenv from "dotenv";
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
+import { spawn } from "node:child_process";
 import { mkdir, readFile, readdir, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
@@ -101,6 +102,71 @@ const WEB_CHAT_RESUME_INCOMPLETE_JOBS = !["0", "false", "no", "off"].includes((p
 let activeJobWorkers = 0;
 let devPasswordFailedAttempts = 0;
 let devPasswordLocked = false;
+const NPM_COMMAND = process.platform === "win32" ? "npm.cmd" : "npm";
+const CLAUDE_NPM_PACKAGE = "@anthropic-ai/claude-code";
+
+type CodexVersionSnapshot = {
+  currentVersion: string | null;
+  latestVersion: string | null;
+  updateAvailable: boolean;
+  checkedAt: string;
+  error: string | null;
+};
+
+type CodexUpdateLogEntry = {
+  ts: string;
+  level: "info" | "error" | "success";
+  message: string;
+};
+
+type CodexUpdateStatus = {
+  running: boolean;
+  startedAt: string | null;
+  finishedAt: string | null;
+  success: boolean | null;
+  currentVersion: string | null;
+  latestVersion: string | null;
+  error: string | null;
+  logs: CodexUpdateLogEntry[];
+};
+
+let codexVersionSnapshot: CodexVersionSnapshot = {
+  currentVersion: null,
+  latestVersion: null,
+  updateAvailable: false,
+  checkedAt: "",
+  error: null
+};
+
+let codexUpdateStatus: CodexUpdateStatus = {
+  running: false,
+  startedAt: null,
+  finishedAt: null,
+  success: null,
+  currentVersion: null,
+  latestVersion: null,
+  error: null,
+  logs: []
+};
+
+let claudeVersionSnapshot: CodexVersionSnapshot = {
+  currentVersion: null,
+  latestVersion: null,
+  updateAvailable: false,
+  checkedAt: "",
+  error: null
+};
+
+let claudeUpdateStatus: CodexUpdateStatus = {
+  running: false,
+  startedAt: null,
+  finishedAt: null,
+  success: null,
+  currentVersion: null,
+  latestVersion: null,
+  error: null,
+  logs: []
+};
 
 function normalizeServerLabel(value: string): string {
   return value.trim().slice(0, 40) || DEFAULT_WEB_SERVER_LABEL;
@@ -295,6 +361,393 @@ async function verifyGoogleIdToken(idToken: string): Promise<string | null> {
   return email;
 }
 
+type CommandRunResult = {
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+};
+
+function spawnLocalCommand(command: string, args: string[], options: { cwd?: string } = {}): ReturnType<typeof spawn> {
+  if (process.platform === "win32" && /\.(cmd|bat)$/i.test(command.trim())) {
+    return spawn("cmd.exe", ["/d", "/s", "/c", command, ...args], {
+      cwd: options.cwd ?? process.cwd(),
+      env: process.env,
+      windowsHide: true,
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+  }
+
+  return spawn(command, args, {
+    cwd: options.cwd ?? process.cwd(),
+    env: process.env,
+    windowsHide: true,
+    shell: false,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+}
+
+function runCommandCapture(command: string, args: string[], options: { cwd?: string; timeoutMs?: number } = {}): Promise<CommandRunResult> {
+  return new Promise((resolve, reject) => {
+    const child = spawnLocalCommand(command, args, { cwd: options.cwd });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+
+    const timer = options.timeoutMs
+      ? setTimeout(() => {
+          child.kill();
+          fail(new Error(`Command timed out after ${options.timeoutMs}ms: ${command}`));
+        }, options.timeoutMs)
+      : null;
+
+    const finish = (result: CommandRunResult) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timer) {
+        clearTimeout(timer);
+      }
+      resolve(result);
+    };
+
+    const fail = (err: Error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timer) {
+        clearTimeout(timer);
+      }
+      reject(err);
+    };
+
+    child.stdout?.on("data", (chunk) => {
+      stdout += String(chunk);
+    });
+
+    child.stderr?.on("data", (chunk) => {
+      stderr += String(chunk);
+    });
+
+    child.on("error", (err) => {
+      fail(err instanceof Error ? err : new Error(String(err)));
+    });
+
+    child.on("close", (code) => {
+      finish({ stdout, stderr, exitCode: code });
+    });
+  });
+}
+
+function parseSemver(text: string): string | null {
+  const match = text.match(/(\d+\.\d+\.\d+)/);
+  return match?.[1] ?? null;
+}
+
+function resetCodexUpdateStatus(latestVersion: string | null): void {
+  codexUpdateStatus = {
+    running: false,
+    startedAt: null,
+    finishedAt: null,
+    success: null,
+    currentVersion: codexVersionSnapshot.currentVersion,
+    latestVersion,
+    error: null,
+    logs: []
+  };
+}
+
+function pushCodexUpdateLog(level: CodexUpdateLogEntry["level"], message: string): void {
+  codexUpdateStatus.logs.push({
+    ts: new Date().toISOString(),
+    level,
+    message
+  });
+}
+
+async function readCodexCurrentVersion(): Promise<string | null> {
+  const result = await runCommandCapture(codexCommandResolved, ["--version"], { timeoutMs: 20000 });
+  if (result.exitCode !== 0) {
+    throw new Error((result.stderr || result.stdout || `codex --version failed with exit ${result.exitCode}`).trim());
+  }
+  return parseSemver(`${result.stdout}\n${result.stderr}`);
+}
+
+async function readLatestNpmPackageVersion(packageName: string): Promise<string | null> {
+  const result = await runCommandCapture(NPM_COMMAND, ["view", packageName, "version"], { timeoutMs: 30000 });
+  if (result.exitCode !== 0) {
+    throw new Error((result.stderr || result.stdout || `npm view failed with exit ${result.exitCode}`).trim());
+  }
+  return parseSemver(result.stdout) ?? result.stdout.trim().split(/\r?\n/).map((line) => line.trim()).filter(Boolean).pop() ?? null;
+}
+
+async function readCodexLatestVersion(): Promise<string | null> {
+  return readLatestNpmPackageVersion("@openai/codex");
+}
+
+async function readClaudeCurrentVersion(): Promise<string | null> {
+  const result = await runCommandCapture(claudeRunnerResolved.command, ["--version"], { timeoutMs: 20000 });
+  if (result.exitCode !== 0) {
+    throw new Error((result.stderr || result.stdout || `claude --version failed with exit ${result.exitCode}`).trim());
+  }
+  return parseSemver(`${result.stdout}
+${result.stderr}`);
+}
+
+async function readClaudeLatestVersion(): Promise<string | null> {
+  return readLatestNpmPackageVersion(CLAUDE_NPM_PACKAGE);
+}
+
+function pushClaudeUpdateLog(level: CodexUpdateLogEntry["level"], message: string): void {
+  claudeUpdateStatus.logs.push({
+    ts: new Date().toISOString(),
+    level,
+    message
+  });
+}
+
+function resetClaudeUpdateStatus(latestVersion: string | null): void {
+  claudeUpdateStatus = {
+    running: false,
+    startedAt: null,
+    finishedAt: null,
+    success: null,
+    currentVersion: claudeVersionSnapshot.currentVersion,
+    latestVersion,
+    error: null,
+    logs: []
+  };
+}
+
+async function collectClaudeVersionSnapshot(): Promise<CodexVersionSnapshot> {
+  const checkedAt = new Date().toISOString();
+
+  try {
+    const [currentVersion, latestVersion] = await Promise.all([
+      readClaudeCurrentVersion(),
+      readClaudeLatestVersion()
+    ]);
+
+    claudeVersionSnapshot = {
+      currentVersion,
+      latestVersion,
+      updateAvailable: Boolean(currentVersion && latestVersion && currentVersion !== latestVersion),
+      checkedAt,
+      error: null
+    };
+  } catch (err) {
+    claudeVersionSnapshot = {
+      currentVersion: claudeVersionSnapshot.currentVersion,
+      latestVersion: claudeVersionSnapshot.latestVersion,
+      updateAvailable: false,
+      checkedAt,
+      error: err instanceof Error ? err.message : String(err)
+    };
+  }
+
+  claudeUpdateStatus.currentVersion = claudeVersionSnapshot.currentVersion;
+  claudeUpdateStatus.latestVersion = claudeVersionSnapshot.latestVersion;
+  return claudeVersionSnapshot;
+}
+
+function parseClaudeAuthStatus(rawText: string): { loggedIn: boolean } | null {
+  const trimmed = rawText.trim();
+  if (!trimmed.startsWith("{")) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as { loggedIn?: boolean };
+    return { loggedIn: Boolean(parsed.loggedIn) };
+  } catch {
+    return null;
+  }
+}
+
+async function runClaudeSmokeTests(latestVersion: string): Promise<void> {
+  pushClaudeUpdateLog("info", `Testing Claude ${latestVersion}: version check`);
+  const versionResult = await runCommandCapture(claudeRunnerResolved.command, ["--version"], { timeoutMs: 20000 });
+  if (versionResult.exitCode !== 0) {
+    throw new Error((versionResult.stderr || versionResult.stdout || "claude --version failed").trim());
+  }
+  pushClaudeUpdateLog("success", (versionResult.stdout || versionResult.stderr).trim());
+
+  pushClaudeUpdateLog("info", "Testing Claude auth status");
+  const authResult = await runCommandCapture(claudeRunnerResolved.command, ["auth", "status"], { timeoutMs: 20000 });
+  const authText = `${authResult.stdout}
+${authResult.stderr}`.trim();
+  const authStatus = parseClaudeAuthStatus(authText);
+  if (!authStatus) {
+    throw new Error(authText || "claude auth status failed");
+  }
+  pushClaudeUpdateLog(authStatus.loggedIn ? "success" : "info", authText);
+
+  if (!authStatus.loggedIn) {
+    pushClaudeUpdateLog("info", "Claude is not logged in; skipped print smoke test.");
+    return;
+  }
+
+  pushClaudeUpdateLog("info", "Testing Claude print smoke prompt");
+  const printResult = await runCommandCapture(claudeRunnerResolved.command, ["-p", "reply with ok only"], {
+    cwd: config.codexWorkdir,
+    timeoutMs: 120000
+  });
+  if (printResult.exitCode !== 0) {
+    throw new Error((printResult.stderr || printResult.stdout || "claude print smoke test failed").trim());
+  }
+  const output = `${printResult.stdout}
+${printResult.stderr}`.trim();
+  pushClaudeUpdateLog("success", output || "claude print smoke test passed");
+}
+
+function startClaudeUpdate(latestVersion: string): void {
+  claudeUpdateStatus = {
+    running: true,
+    startedAt: new Date().toISOString(),
+    finishedAt: null,
+    success: null,
+    currentVersion: claudeVersionSnapshot.currentVersion,
+    latestVersion,
+    error: null,
+    logs: []
+  };
+
+  void (async () => {
+    try {
+      pushClaudeUpdateLog("info", `Updating Claude to ${latestVersion}`);
+      const installResult = await runCommandCapture(NPM_COMMAND, ["install", "-g", `${CLAUDE_NPM_PACKAGE}@${latestVersion}`], { timeoutMs: 10 * 60 * 1000 });
+      if (installResult.exitCode !== 0) {
+        throw new Error((installResult.stderr || installResult.stdout || "claude update failed").trim());
+      }
+      const installOutput = `${installResult.stdout}
+${installResult.stderr}`.trim();
+      if (installOutput) {
+        pushClaudeUpdateLog("success", installOutput);
+      }
+
+      await runClaudeSmokeTests(latestVersion);
+      const snapshot = await collectClaudeVersionSnapshot();
+      claudeUpdateStatus.running = false;
+      claudeUpdateStatus.finishedAt = new Date().toISOString();
+      claudeUpdateStatus.success = true;
+      claudeUpdateStatus.error = null;
+      claudeUpdateStatus.currentVersion = snapshot.currentVersion;
+      claudeUpdateStatus.latestVersion = snapshot.latestVersion;
+      pushClaudeUpdateLog("success", `Claude update finished: ${snapshot.currentVersion ?? latestVersion}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      claudeUpdateStatus.running = false;
+      claudeUpdateStatus.finishedAt = new Date().toISOString();
+      claudeUpdateStatus.success = false;
+      claudeUpdateStatus.error = message;
+      pushClaudeUpdateLog("error", message);
+    }
+  })();
+}
+
+async function collectCodexVersionSnapshot(): Promise<CodexVersionSnapshot> {
+  const checkedAt = new Date().toISOString();
+
+  try {
+    const [currentVersion, latestVersion] = await Promise.all([
+      readCodexCurrentVersion(),
+      readCodexLatestVersion()
+    ]);
+
+    codexVersionSnapshot = {
+      currentVersion,
+      latestVersion,
+      updateAvailable: Boolean(currentVersion && latestVersion && currentVersion !== latestVersion),
+      checkedAt,
+      error: null
+    };
+  } catch (err) {
+    codexVersionSnapshot = {
+      currentVersion: codexVersionSnapshot.currentVersion,
+      latestVersion: codexVersionSnapshot.latestVersion,
+      updateAvailable: false,
+      checkedAt,
+      error: err instanceof Error ? err.message : String(err)
+    };
+  }
+
+  codexUpdateStatus.currentVersion = codexVersionSnapshot.currentVersion;
+  codexUpdateStatus.latestVersion = codexVersionSnapshot.latestVersion;
+  return codexVersionSnapshot;
+}
+
+async function runCodexSmokeTests(latestVersion: string): Promise<void> {
+  pushCodexUpdateLog("info", `Testing codex ${latestVersion}: version check`);
+  const versionResult = await runCommandCapture(codexCommandResolved, ["--version"], { timeoutMs: 20000 });
+  if (versionResult.exitCode !== 0) {
+    throw new Error((versionResult.stderr || versionResult.stdout || "codex --version failed").trim());
+  }
+  pushCodexUpdateLog("success", (versionResult.stdout || versionResult.stderr).trim());
+
+  pushCodexUpdateLog("info", "Testing login status");
+  const loginResult = await runCommandCapture(codexCommandResolved, ["login", "status"], { timeoutMs: 30000 });
+  if (loginResult.exitCode !== 0) {
+    throw new Error((loginResult.stderr || loginResult.stdout || "codex login status failed").trim());
+  }
+  pushCodexUpdateLog("success", (loginResult.stdout || loginResult.stderr).trim());
+
+  pushCodexUpdateLog("info", "Testing codex exec smoke prompt");
+  const execResult = await runCommandCapture(
+    codexCommandResolved,
+    ["exec", "--skip-git-repo-check", "reply with ok only"],
+    { cwd: config.codexWorkdir, timeoutMs: 120000 }
+  );
+  if (execResult.exitCode !== 0) {
+    throw new Error((execResult.stderr || execResult.stdout || "codex exec smoke test failed").trim());
+  }
+  const execOutput = `${execResult.stdout}\n${execResult.stderr}`.trim();
+  pushCodexUpdateLog("success", execOutput || "codex exec smoke test passed");
+}
+
+function startCodexUpdate(latestVersion: string): void {
+  codexUpdateStatus = {
+    running: true,
+    startedAt: new Date().toISOString(),
+    finishedAt: null,
+    success: null,
+    currentVersion: codexVersionSnapshot.currentVersion,
+    latestVersion,
+    error: null,
+    logs: []
+  };
+
+  void (async () => {
+    try {
+      pushCodexUpdateLog("info", `Updating Codex to ${latestVersion}`);
+      const installResult = await runCommandCapture(NPM_COMMAND, ["install", "-g", `@openai/codex@${latestVersion}`], { timeoutMs: 10 * 60 * 1000 });
+      if (installResult.exitCode !== 0) {
+        throw new Error((installResult.stderr || installResult.stdout || "codex update failed").trim());
+      }
+      const installOutput = `${installResult.stdout}\n${installResult.stderr}`.trim();
+      if (installOutput) {
+        pushCodexUpdateLog("success", installOutput);
+      }
+
+      await runCodexSmokeTests(latestVersion);
+      const snapshot = await collectCodexVersionSnapshot();
+      codexUpdateStatus.running = false;
+      codexUpdateStatus.finishedAt = new Date().toISOString();
+      codexUpdateStatus.success = true;
+      codexUpdateStatus.error = null;
+      codexUpdateStatus.currentVersion = snapshot.currentVersion;
+      codexUpdateStatus.latestVersion = snapshot.latestVersion;
+      pushCodexUpdateLog("success", `Codex update finished: ${snapshot.currentVersion ?? latestVersion}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      codexUpdateStatus.running = false;
+      codexUpdateStatus.finishedAt = new Date().toISOString();
+      codexUpdateStatus.success = false;
+      codexUpdateStatus.error = message;
+      pushCodexUpdateLog("error", message);
+    }
+  })();
+}
 
 function pruneChatJobs(): void {
   chatJobStore.prune(CHAT_JOB_MAX);
@@ -1551,6 +2004,244 @@ async function handleApiServerLabel(req: IncomingMessage, res: ServerResponse): 
   }
 }
 
+async function handleApiCodexVersionStatus(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = requireAuth(req, res);
+  if (!auth) {
+    return;
+  }
+
+  const chatId = WEB_CHAT_ID;
+  if (!ensureAllowed(chatId)) {
+    json(res, 403, { error: "Access denied" });
+    return;
+  }
+
+  try {
+    const snapshot = await collectCodexVersionSnapshot();
+    if (!codexUpdateStatus.running && codexUpdateStatus.logs.length === 0) {
+      resetCodexUpdateStatus(snapshot.latestVersion);
+      codexUpdateStatus.currentVersion = snapshot.currentVersion;
+      codexUpdateStatus.latestVersion = snapshot.latestVersion;
+      codexUpdateStatus.error = snapshot.error;
+    }
+
+    json(res, 200, {
+      ...snapshot,
+      running: codexUpdateStatus.running,
+      updateStatus: codexUpdateStatus
+    });
+  } catch (err) {
+    json(res, 500, { error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+async function handleApiCodexUpdateStatus(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = requireAuth(req, res);
+  if (!auth) {
+    return;
+  }
+
+  const chatId = WEB_CHAT_ID;
+  if (!ensureAllowed(chatId)) {
+    json(res, 403, { error: "Access denied" });
+    return;
+  }
+
+  json(res, 200, {
+    ...codexVersionSnapshot,
+    updateStatus: codexUpdateStatus
+  });
+}
+
+async function handleApiCodexUpdate(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = requireAuth(req, res);
+  if (!auth) {
+    return;
+  }
+
+  const chatId = WEB_CHAT_ID;
+  if (!ensureAllowed(chatId)) {
+    json(res, 403, { error: "Access denied" });
+    return;
+  }
+
+  if (codexUpdateStatus.running) {
+    json(res, 409, {
+      error: "Codex update already running",
+      updateStatus: codexUpdateStatus
+    });
+    return;
+  }
+
+  try {
+    const snapshot = await collectCodexVersionSnapshot();
+    if (snapshot.error) {
+      json(res, 500, {
+        error: snapshot.error,
+        updateStatus: codexUpdateStatus,
+        currentVersion: snapshot.currentVersion,
+        latestVersion: snapshot.latestVersion,
+        updateAvailable: snapshot.updateAvailable
+      });
+      return;
+    }
+
+    if (!snapshot.latestVersion) {
+      json(res, 500, { error: "Could not determine latest Codex version." });
+      return;
+    }
+
+    if (!snapshot.updateAvailable) {
+      resetCodexUpdateStatus(snapshot.latestVersion);
+      codexUpdateStatus.currentVersion = snapshot.currentVersion;
+      codexUpdateStatus.latestVersion = snapshot.latestVersion;
+      codexUpdateStatus.success = true;
+      codexUpdateStatus.finishedAt = new Date().toISOString();
+      pushCodexUpdateLog("success", `Codex is already up to date: ${snapshot.currentVersion ?? snapshot.latestVersion}`);
+      json(res, 200, {
+        ok: true,
+        started: false,
+        updateStatus: codexUpdateStatus,
+        currentVersion: snapshot.currentVersion,
+        latestVersion: snapshot.latestVersion,
+        updateAvailable: false
+      });
+      return;
+    }
+
+    startCodexUpdate(snapshot.latestVersion);
+    json(res, 202, {
+      ok: true,
+      started: true,
+      updateStatus: codexUpdateStatus,
+      currentVersion: snapshot.currentVersion,
+      latestVersion: snapshot.latestVersion,
+      updateAvailable: true
+    });
+  } catch (err) {
+    json(res, 500, { error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+async function handleApiClaudeVersionStatus(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = requireAuth(req, res);
+  if (!auth) {
+    return;
+  }
+
+  const chatId = WEB_CHAT_ID;
+  if (!ensureAllowed(chatId)) {
+    json(res, 403, { error: "Access denied" });
+    return;
+  }
+
+  try {
+    const snapshot = await collectClaudeVersionSnapshot();
+    if (!claudeUpdateStatus.running && claudeUpdateStatus.logs.length === 0) {
+      resetClaudeUpdateStatus(snapshot.latestVersion);
+      claudeUpdateStatus.currentVersion = snapshot.currentVersion;
+      claudeUpdateStatus.latestVersion = snapshot.latestVersion;
+      claudeUpdateStatus.error = snapshot.error;
+    }
+
+    json(res, 200, {
+      ...snapshot,
+      running: claudeUpdateStatus.running,
+      updateStatus: claudeUpdateStatus
+    });
+  } catch (err) {
+    json(res, 500, { error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+async function handleApiClaudeUpdateStatus(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = requireAuth(req, res);
+  if (!auth) {
+    return;
+  }
+
+  const chatId = WEB_CHAT_ID;
+  if (!ensureAllowed(chatId)) {
+    json(res, 403, { error: "Access denied" });
+    return;
+  }
+
+  json(res, 200, {
+    ...claudeVersionSnapshot,
+    updateStatus: claudeUpdateStatus
+  });
+}
+
+async function handleApiClaudeUpdate(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = requireAuth(req, res);
+  if (!auth) {
+    return;
+  }
+
+  const chatId = WEB_CHAT_ID;
+  if (!ensureAllowed(chatId)) {
+    json(res, 403, { error: "Access denied" });
+    return;
+  }
+
+  if (claudeUpdateStatus.running) {
+    json(res, 409, {
+      error: "Claude update already running",
+      updateStatus: claudeUpdateStatus
+    });
+    return;
+  }
+
+  try {
+    const snapshot = await collectClaudeVersionSnapshot();
+    if (snapshot.error) {
+      json(res, 500, {
+        error: snapshot.error,
+        updateStatus: claudeUpdateStatus,
+        currentVersion: snapshot.currentVersion,
+        latestVersion: snapshot.latestVersion,
+        updateAvailable: snapshot.updateAvailable
+      });
+      return;
+    }
+
+    if (!snapshot.latestVersion) {
+      json(res, 500, { error: "Could not determine latest Claude version." });
+      return;
+    }
+
+    if (!snapshot.updateAvailable) {
+      resetClaudeUpdateStatus(snapshot.latestVersion);
+      claudeUpdateStatus.currentVersion = snapshot.currentVersion;
+      claudeUpdateStatus.latestVersion = snapshot.latestVersion;
+      claudeUpdateStatus.success = true;
+      claudeUpdateStatus.finishedAt = new Date().toISOString();
+      pushClaudeUpdateLog("success", `Claude is already up to date: ${snapshot.currentVersion ?? snapshot.latestVersion}`);
+      json(res, 200, {
+        ok: true,
+        started: false,
+        updateStatus: claudeUpdateStatus,
+        currentVersion: snapshot.currentVersion,
+        latestVersion: snapshot.latestVersion,
+        updateAvailable: false
+      });
+      return;
+    }
+
+    startClaudeUpdate(snapshot.latestVersion);
+    json(res, 202, {
+      ok: true,
+      started: true,
+      updateStatus: claudeUpdateStatus,
+      currentVersion: snapshot.currentVersion,
+      latestVersion: snapshot.latestVersion,
+      updateAvailable: true
+    });
+  } catch (err) {
+    json(res, 500, { error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
 async function handleApiAuthStatus(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const session = getAuthSession(req);
   json(res, 200, {
@@ -1827,6 +2518,36 @@ export async function startWebServer(): Promise<void> {
 
     if (req.method === "POST" && pathname === "/api/server-label") {
       await handleApiServerLabel(req, res);
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/api/codex/version-status") {
+      await handleApiCodexVersionStatus(req, res);
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/api/codex/update-status") {
+      await handleApiCodexUpdateStatus(req, res);
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/codex/update") {
+      await handleApiCodexUpdate(req, res);
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/api/claude/version-status") {
+      await handleApiClaudeVersionStatus(req, res);
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/api/claude/update-status") {
+      await handleApiClaudeUpdateStatus(req, res);
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/claude/update") {
+      await handleApiClaudeUpdate(req, res);
       return;
     }
 
