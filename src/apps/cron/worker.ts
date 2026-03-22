@@ -62,6 +62,27 @@ async function ensureClaudeRunnerResolved(): Promise<{ command: string; argsTemp
   return claudeRunnerResolved;
 }
 
+async function notifyWebSessionUpdate(input: { slot: string; sessionId: string; source: string; trigger: string }): Promise<void> {
+  const port = Number(process.env.JCLAW_WEB_PORT ?? "3100") || 3100;
+  const url = `http://127.0.0.1:${port}/api/internal/session-event`;
+
+  try {
+    await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        slot: input.slot,
+        sessionId: input.sessionId,
+        source: input.source,
+        trigger: input.trigger,
+        ts: new Date().toISOString()
+      })
+    });
+  } catch (err) {
+    console.error(`[cron] web notify failed for slot ${input.slot}:`, err);
+  }
+}
+
 async function notifyCronResult(input: {
   job: CronJob;
   sessionName: string | null;
@@ -184,6 +205,13 @@ async function executeJob(jobId: string): Promise<void> {
       error: result.error,
       exitCode: result.exitCode,
       durationMs: result.durationMs
+    });
+
+    await notifyWebSessionUpdate({
+      slot: session.shortId,
+      sessionId: session.id,
+      source: "cron",
+      trigger: job.id
     });
 
     await interactionLogger.append({

@@ -105,6 +105,7 @@ const WEB_ALLOWED_EMAILS = new Set(
 );
 const webAuthSessions = new Map<string, WebAuthSession>();
 const chatJobSubscribers = new Map<string, Set<ServerResponse>>();
+const sessionEventSubscribers = new Map<string, Set<ServerResponse>>();
 const CHAT_JOB_MAX = Math.max(200, Number(process.env.WEB_CHAT_JOB_MAX ?? "2000") || 2000);
 const CHAT_JOB_WORKERS = Math.max(1, Number(process.env.WEB_CHAT_JOB_WORKERS ?? "1") || 1);
 const CHAT_SSE_HEARTBEAT_MS = Math.max(10000, Number(process.env.WEB_CHAT_SSE_HEARTBEAT_MS ?? "15000") || 15000);
@@ -803,6 +804,36 @@ function subscribeChatJob(jobId: string, res: ServerResponse): void {
 function emitSse(res: ServerResponse, event: string, payload: unknown): void {
   res.write(`event: ${event}\n`);
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
+function subscribeSessionEvents(slot: string, res: ServerResponse): void {
+  const key = slot.trim().toUpperCase();
+  const set = sessionEventSubscribers.get(key) ?? new Set<ServerResponse>();
+  set.add(res);
+  sessionEventSubscribers.set(key, set);
+
+  res.on("close", () => {
+    const current = sessionEventSubscribers.get(key);
+    if (!current) {
+      return;
+    }
+    current.delete(res);
+    if (current.size === 0) {
+      sessionEventSubscribers.delete(key);
+    }
+  });
+}
+
+function notifySessionEvent(slot: string, payload: unknown): void {
+  const key = slot.trim().toUpperCase();
+  const subs = sessionEventSubscribers.get(key);
+  if (!subs || subs.size === 0) {
+    return;
+  }
+
+  for (const res of subs) {
+    emitSse(res, "session-update", payload);
+  }
 }
 
 function notifyChatJob(job: ChatJobRecord): void {
@@ -1919,6 +1950,73 @@ async function handleApiChatJobs(req: IncomingMessage, res: ServerResponse): Pro
   json(res, 200, { items });
 }
 
+async function handleApiSessionEvents(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = requireAuth(req, res);
+  if (!auth) {
+    return;
+  }
+
+  const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
+  const slot = (url.searchParams.get("slot") ?? "").trim().toUpperCase();
+  if (!slot) {
+    json(res, 400, { error: "slot is required" });
+    return;
+  }
+
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive"
+  });
+
+  subscribeSessionEvents(slot, res);
+  emitSse(res, "connected", { slot, ts: new Date().toISOString() });
+
+  const heartbeat = setInterval(() => {
+    res.write(": keepalive\n\n");
+  }, CHAT_SSE_HEARTBEAT_MS);
+
+  res.on("close", () => {
+    clearInterval(heartbeat);
+  });
+}
+
+function isLoopbackRequest(req: IncomingMessage): boolean {
+  const remote = (req.socket.remoteAddress ?? "").trim();
+  return remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1";
+}
+
+async function handleApiInternalSessionEvent(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (!isLoopbackRequest(req)) {
+    json(res, 403, { error: "Loopback only" });
+    return;
+  }
+
+  let payload: { slot?: string; sessionId?: string; source?: string; trigger?: string; ts?: string };
+  try {
+    payload = JSON.parse(await readBody(req)) as { slot?: string; sessionId?: string; source?: string; trigger?: string; ts?: string };
+  } catch (err) {
+    json(res, 400, { error: String(err) });
+    return;
+  }
+
+  const slot = String(payload.slot ?? "").trim().toUpperCase();
+  if (!slot) {
+    json(res, 400, { error: "slot is required" });
+    return;
+  }
+
+  notifySessionEvent(slot, {
+    slot,
+    sessionId: String(payload.sessionId ?? "").trim() || null,
+    source: String(payload.source ?? "external").trim() || "external",
+    trigger: String(payload.trigger ?? "run").trim() || "run",
+    ts: String(payload.ts ?? new Date().toISOString())
+  });
+
+  json(res, 200, { ok: true });
+}
+
 async function handleApiChatStream(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const auth = requireAuth(req, res);
   if (!auth) {
@@ -2613,6 +2711,16 @@ export async function startWebServer(): Promise<void> {
       return;
     }
 
+    if (req.method === "GET" && pathname === "/api/session-events") {
+      await handleApiSessionEvents(req, res);
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/internal/session-event") {
+      await handleApiInternalSessionEvent(req, res);
+      return;
+    }
+
     if (req.method === "GET") {
       await handleStatic(req, res);
       return;
@@ -2629,4 +2737,5 @@ export async function startWebServer(): Promise<void> {
 if (require.main === module) {
   void startWebServer();
 }
+
 

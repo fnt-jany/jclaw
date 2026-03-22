@@ -970,6 +970,9 @@
     let viewportHeightBaseline = window.visualViewport?.height ?? window.innerHeight;
     let slotPageStart = 0;
     let currentSlot = '';
+    let sessionEventsSource = null;
+    let sessionEventsSlot = '';
+    let sessionRefreshInFlight = null;
     let serverLabel = 'local';
     let serverTheme = 'auto';
     let codexVersionLoaded = false;
@@ -1758,6 +1761,71 @@ ${row.error}` : '']
       messageEl.focus();
     }
 
+    function closeSessionEventsSource() {
+      if (sessionEventsSource) {
+        sessionEventsSource.close();
+        sessionEventsSource = null;
+      }
+      sessionEventsSlot = '';
+    }
+
+    async function refreshCurrentSessionHistory() {
+      if (!currentSlot) {
+        return;
+      }
+      if (sessionRefreshInFlight) {
+        await sessionRefreshInFlight;
+        return;
+      }
+
+      sessionRefreshInFlight = (async () => {
+        const data = await api(`/api/session-history?slot=${encodeURIComponent(currentSlot)}&limit=${HISTORY_LIMIT}`, {
+          method: 'GET',
+          headers: {}
+        });
+        const rows = Array.isArray(data.items) ? data.items : [];
+        sessionLogs.set(sessionKey(currentSlot), formatHistoryRows(rows, currentSlot));
+        hydratedSlots.add(currentSlot);
+        renderCurrentLog();
+      })();
+
+      try {
+        await sessionRefreshInFlight;
+      } finally {
+        sessionRefreshInFlight = null;
+      }
+    }
+
+    function ensureSessionEventsSource() {
+      if (!currentSlot) {
+        closeSessionEventsSource();
+        return;
+      }
+      if (sessionEventsSource && sessionEventsSlot === currentSlot) {
+        return;
+      }
+
+      closeSessionEventsSource();
+      sessionEventsSlot = currentSlot;
+      const stream = new EventSource(apiUrl(`/api/session-events?slot=${encodeURIComponent(currentSlot)}`));
+      sessionEventsSource = stream;
+
+      stream.addEventListener('session-update', () => {
+        void refreshCurrentSessionHistory();
+      });
+
+      stream.onerror = () => {
+        if (sessionEventsSource === stream) {
+          closeSessionEventsSource();
+          setTimeout(() => {
+            if (!sessionEventsSource) {
+              ensureSessionEventsSource();
+            }
+          }, 2000);
+        }
+      };
+    }
+
     function apiUrl(path) {
       if (!API_BASE) {
         return path;
@@ -1861,6 +1929,7 @@ ${row.error}` : '']
       renderCurrentLog();
       applyInputState(statusSlot);
       void ensureSessionHydrated(statusSlot);
+      ensureSessionEventsSource();
       void syncPendingJobsForSlot(statusSlot);
     }
 
@@ -2618,6 +2687,7 @@ ${row.error}` : '']
 
     window.addEventListener('beforeunload', () => {
       closeAllJobStreams();
+      closeSessionEventsSource();
       clearCodexUpdatePoll();
     });
 
