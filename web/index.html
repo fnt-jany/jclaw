@@ -19,6 +19,15 @@
       --warn: #fff1f2;
       --tab: #f5f8fd;
       --tab-active: #1f6feb;
+      --bg-glow-1: rgba(255, 183, 120, 0.56);
+      --bg-glow-2: rgba(31, 111, 235, 0.18);
+      --intro-glow-1: rgba(21, 73, 165, 0.20);
+      --intro-glow-2: rgba(255, 132, 42, 0.18);
+      --intro-grad-1: #ffffff;
+      --intro-grad-2: #f7fbff;
+      --intro-grad-3: #fff8ee;
+      --top-grad-1: #ffffff;
+      --top-grad-2: #f0f7ff;
     }
 
     * { box-sizing: border-box; }
@@ -26,7 +35,7 @@
     body {
       margin: 0;
       color: var(--ink);
-      background: radial-gradient(circle at top right, #ffe7d1, transparent 45%), var(--bg);
+      background: radial-gradient(circle at top right, var(--bg-glow-1), transparent 45%), radial-gradient(circle at top left, var(--bg-glow-2), transparent 42%), var(--bg);
       font-family: "IBM Plex Sans", "Pretendard", "Segoe UI", sans-serif;
       min-height: 100vh;
       display: flex;
@@ -41,9 +50,9 @@
       border: 1px solid var(--line);
       border-radius: 18px;
       background:
-        radial-gradient(circle at 8% 18%, rgba(21, 73, 165, 0.14), transparent 48%),
-        radial-gradient(circle at 92% 0%, rgba(255, 132, 42, 0.12), transparent 40%),
-        linear-gradient(135deg, #ffffff 0%, #f7fbff 45%, #fff8ee 100%);
+        radial-gradient(circle at 8% 18%, var(--intro-glow-1), transparent 48%),
+        radial-gradient(circle at 92% 0%, var(--intro-glow-2), transparent 40%),
+        linear-gradient(135deg, var(--intro-grad-1) 0%, var(--intro-grad-2) 45%, var(--intro-grad-3) 100%);
       box-shadow: 0 14px 34px rgba(0, 0, 0, 0.08);
       padding: 18px;
       display: grid;
@@ -147,7 +156,7 @@
       gap: 10px;
       padding: 14px 16px;
       border-bottom: 1px solid var(--line);
-      background: linear-gradient(90deg, #fff, #f7fbff);
+      background: linear-gradient(90deg, var(--top-grad-1), var(--top-grad-2));
       flex-wrap: wrap;
     }
 
@@ -551,6 +560,58 @@
       display: none !important;
     }
 
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.32);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      z-index: 30;
+    }
+
+    .modal-card {
+      width: min(420px, 100%);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--panel);
+      box-shadow: 0 18px 40px rgba(0, 0, 0, 0.18);
+      padding: 16px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .modal-card h3 {
+      margin: 0;
+      font-size: 18px;
+    }
+
+    .modal-card label {
+      display: grid;
+      gap: 6px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .modal-card input,
+    .modal-card select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font: inherit;
+      background: #fff;
+      color: var(--ink);
+    }
+
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
     @media (max-width: 900px) {
       .tabs {
         grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -747,6 +808,24 @@
     </div>
   </section>
 
+  <section id="serverThemeModal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <h3>Server Appearance</h3>
+      <label>
+        <span>Server name</span>
+        <input id="serverLabelInput" type="text" maxlength="40" />
+      </label>
+      <label>
+        <span>Theme</span>
+        <select id="serverThemeSelect"></select>
+      </label>
+      <div class="modal-actions">
+        <button id="serverThemeCancelBtn" type="button" class="btn-muted">Cancel</button>
+        <button id="serverThemeSaveBtn" type="button">Save</button>
+      </div>
+    </div>
+  </section>
+
   <section class="intro">
     <h1 class="intro-headline">Jclaw, AI 툴을 활용한 개인형 비서 서비스</h1>
     <p class="intro-sub">
@@ -849,6 +928,11 @@
     const devLoginFormEl = document.getElementById('devLoginForm');
     const devPasswordEl = document.getElementById('devPassword');
     const devLoginSubmitEl = devLoginFormEl.querySelector('button[type="submit"]');
+    const serverThemeModalEl = document.getElementById('serverThemeModal');
+    const serverLabelInputEl = document.getElementById('serverLabelInput');
+    const serverThemeSelectEl = document.getElementById('serverThemeSelect');
+    const serverThemeCancelBtnEl = document.getElementById('serverThemeCancelBtn');
+    const serverThemeSaveBtnEl = document.getElementById('serverThemeSaveBtn');
 
     const authTitleEl = document.getElementById('authTitle');
     const brandEl = document.getElementById('brand');
@@ -887,6 +971,7 @@
     let slotPageStart = 0;
     let currentSlot = '';
     let serverLabel = 'local';
+    let serverTheme = 'auto';
     let codexVersionLoaded = false;
     let codexVersionState = {
       currentVersion: null,
@@ -1137,12 +1222,173 @@
       statusEl.textContent = s;
     }
 
-    function applyServerLabel(nextLabel) {
+    const SERVER_THEMES = [
+      {
+        id: 'coast',
+        label: 'Coast',
+        bg: '#f3efe7',
+        panel: '#fffdf7',
+        accent: '#1f6feb',
+        accent2: '#1549a5',
+        bgGlow1: 'rgba(255, 183, 120, 0.62)',
+        bgGlow2: 'rgba(31, 111, 235, 0.20)',
+        introGlow1: 'rgba(21, 73, 165, 0.24)',
+        introGlow2: 'rgba(255, 132, 42, 0.20)',
+        introGrad1: '#ffffff',
+        introGrad2: '#eef7ff',
+        introGrad3: '#fff8ee',
+        topGrad1: '#ffffff',
+        topGrad2: '#e7f2ff'
+      },
+      {
+        id: 'forest',
+        label: 'Forest',
+        bg: '#eef4ef',
+        panel: '#fbfffb',
+        accent: '#147d64',
+        accent2: '#0f5c4b',
+        bgGlow1: 'rgba(112, 214, 176, 0.50)',
+        bgGlow2: 'rgba(20, 125, 100, 0.18)',
+        introGlow1: 'rgba(20, 125, 100, 0.24)',
+        introGlow2: 'rgba(230, 195, 92, 0.18)',
+        introGrad1: '#ffffff',
+        introGrad2: '#f2fff9',
+        introGrad3: '#f9fff1',
+        topGrad1: '#fbfffd',
+        topGrad2: '#e2fbf1'
+      },
+      {
+        id: 'orchid',
+        label: 'Orchid',
+        bg: '#f4eef5',
+        panel: '#fffafe',
+        accent: '#9b3fb3',
+        accent2: '#6c287c',
+        bgGlow1: 'rgba(190, 124, 214, 0.50)',
+        bgGlow2: 'rgba(155, 63, 179, 0.18)',
+        introGlow1: 'rgba(155, 63, 179, 0.22)',
+        introGlow2: 'rgba(255, 180, 122, 0.18)',
+        introGrad1: '#ffffff',
+        introGrad2: '#fbf5ff',
+        introGrad3: '#fff7fb',
+        topGrad1: '#fffbff',
+        topGrad2: '#f2e6fb'
+      },
+      {
+        id: 'cobalt',
+        label: 'Cobalt',
+        bg: '#eef3f7',
+        panel: '#fbfdff',
+        accent: '#2563eb',
+        accent2: '#1e40af',
+        bgGlow1: 'rgba(125, 168, 255, 0.46)',
+        bgGlow2: 'rgba(37, 99, 235, 0.18)',
+        introGlow1: 'rgba(37, 99, 235, 0.22)',
+        introGlow2: 'rgba(140, 200, 255, 0.18)',
+        introGrad1: '#ffffff',
+        introGrad2: '#f2f8ff',
+        introGrad3: '#f7fcff',
+        topGrad1: '#fbfdff',
+        topGrad2: '#e6f0ff'
+      },
+      {
+        id: 'amber',
+        label: 'Amber',
+        bg: '#f7f1ea',
+        panel: '#fffdf9',
+        accent: '#c2551a',
+        accent2: '#8e3e12',
+        bgGlow1: 'rgba(255, 170, 108, 0.52)',
+        bgGlow2: 'rgba(194, 85, 26, 0.20)',
+        introGlow1: 'rgba(194, 85, 26, 0.22)',
+        introGlow2: 'rgba(255, 211, 126, 0.18)',
+        introGrad1: '#ffffff',
+        introGrad2: '#fff7ef',
+        introGrad3: '#fffdf5',
+        topGrad1: '#fffdfa',
+        topGrad2: '#fff0e1'
+      }
+    ];
+
+    function hashServerLabel(value) {
+      let hash = 0;
+      for (const ch of String(value || 'local')) {
+        hash = ((hash * 31) + ch.charCodeAt(0)) >>> 0;
+      }
+      return hash;
+    }
+
+    function getServerThemeOptionsText() {
+      return ['auto (server name based)', ...SERVER_THEMES.map((theme) => `${theme.id} (${theme.label})`)].join(', ');
+    }
+
+    function resolveServerTheme(label, themeId) {
+      const normalized = String(themeId || 'auto').trim().toLowerCase();
+      if (normalized && normalized !== 'auto') {
+        const explicit = SERVER_THEMES.find((theme) => theme.id === normalized);
+        if (explicit) {
+          return explicit;
+        }
+      }
+      return SERVER_THEMES[hashServerLabel(label) % SERVER_THEMES.length];
+    }
+
+    function applyServerTheme(label, themeId = serverTheme) {
+      const theme = resolveServerTheme(label, themeId);
+      const root = document.documentElement;
+      root.style.setProperty('--bg', theme.bg);
+      root.style.setProperty('--panel', theme.panel);
+      root.style.setProperty('--accent', theme.accent);
+      root.style.setProperty('--accent-2', theme.accent2);
+      root.style.setProperty('--tab-active', theme.accent);
+      root.style.setProperty('--bg-glow-1', theme.bgGlow1);
+      root.style.setProperty('--bg-glow-2', theme.bgGlow2);
+      root.style.setProperty('--intro-glow-1', theme.introGlow1);
+      root.style.setProperty('--intro-glow-2', theme.introGlow2);
+      root.style.setProperty('--intro-grad-1', theme.introGrad1);
+      root.style.setProperty('--intro-grad-2', theme.introGrad2);
+      root.style.setProperty('--intro-grad-3', theme.introGrad3);
+      root.style.setProperty('--top-grad-1', theme.topGrad1);
+      root.style.setProperty('--top-grad-2', theme.topGrad2);
+    }
+
+    function applyServerLabel(nextLabel, nextTheme = serverTheme) {
       const normalized = String(nextLabel || '').trim() || 'local';
       serverLabel = normalized;
+      serverTheme = String(nextTheme || 'auto').trim().toLowerCase() || 'auto';
+      applyServerTheme(normalized, serverTheme);
       document.title = `jclaw | ${normalized}`;
       brandEl.textContent = `jclaw web | ${normalized}`;
       authTitleEl.textContent = `Sign in to ${normalized}`;
+    }
+
+    function ensureServerThemeSelectOptions() {
+      if (serverThemeSelectEl.options.length > 0) {
+        return;
+      }
+      const items = [
+        { value: 'auto', label: 'auto (server name based)' },
+        ...SERVER_THEMES.map((theme) => ({ value: theme.id, label: `${theme.id} (${theme.label})` }))
+      ];
+      for (const item of items) {
+        const option = document.createElement('option');
+        option.value = item.value;
+        option.textContent = item.label;
+        serverThemeSelectEl.appendChild(option);
+      }
+    }
+
+    function openServerThemeModal() {
+      ensureServerThemeSelectOptions();
+      serverLabelInputEl.value = serverLabel;
+      serverThemeSelectEl.value = serverTheme || 'auto';
+      serverThemeModalEl.classList.remove('hidden');
+      serverLabelInputEl.focus();
+      serverLabelInputEl.select();
+    }
+
+    function closeServerThemeModal() {
+      serverThemeModalEl.classList.add('hidden');
     }
 
     function clearCodexUpdatePoll() {
@@ -1589,7 +1835,7 @@ ${row.error}` : '']
     }
 
     function applyState(data, options = { adoptCurrent: true }) {
-      applyServerLabel(data.serverLabel);
+      applyServerLabel(data.serverLabel, data.serverTheme);
       const prevSlot = currentSlot;
       if (options.adoptCurrent) {
         currentSlot = data.sessionSlot;
@@ -2096,18 +2342,25 @@ ${row.error}` : '']
     });
 
 
-    serverLabelEditBtnEl.addEventListener('click', async () => {
-      const next = window.prompt('Server label', serverLabel);
-      if (next === null) {
-        return;
-      }
+    serverLabelEditBtnEl.addEventListener('click', () => {
+      openServerThemeModal();
+    });
 
+    serverThemeCancelBtnEl.addEventListener('click', () => {
+      closeServerThemeModal();
+    });
+
+    serverThemeSaveBtnEl.addEventListener('click', async () => {
       try {
         const data = await api('/api/server-label', {
           method: 'POST',
-          body: JSON.stringify({ label: next })
+          body: JSON.stringify({
+            label: serverLabelInputEl.value,
+            theme: serverThemeSelectEl.value
+          })
         });
-        applyServerLabel(data.serverLabel);
+        applyServerLabel(data.serverLabel, data.serverTheme);
+        closeServerThemeModal();
       } catch (err) {
         appendBubble(String(err), 'err', currentSlot);
       }
@@ -2377,7 +2630,7 @@ ${row.error}` : '']
     async function ensureAuth() {
       try {
         const status = await api('/api/auth/status', { method: 'GET', headers: {} });
-        applyServerLabel(status.serverLabel);
+        applyServerLabel(status.serverLabel, status.serverTheme);
         if (status.authenticated) {
           await bootstrapApp();
           return;

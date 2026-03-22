@@ -40,8 +40,13 @@ let claudeRunnerResolved = { command: "", argsTemplate: "" };
 const WEB_PORT = Number(process.env.JCLAW_WEB_PORT ?? "3100");
 const WEB_HOST = process.env.JCLAW_WEB_HOST ?? "127.0.0.1";
 const DEFAULT_WEB_SERVER_LABEL = (process.env.JCLAW_SERVER_LABEL ?? process.env.HOSTNAME ?? "local").trim() || "local";
+const SERVER_THEME_IDS = ["auto", "coast", "forest", "orchid", "cobalt", "amber"] as const;
+type ServerThemeId = (typeof SERVER_THEME_IDS)[number];
+const DEFAULT_WEB_SERVER_THEME: ServerThemeId = "auto";
 const WEB_SERVER_LABEL_PATH = path.join(dataDir, "server-label.txt");
+const WEB_SERVER_THEME_PATH = path.join(dataDir, "server-theme.txt");
 let webServerLabel = DEFAULT_WEB_SERVER_LABEL;
+let webServerTheme: ServerThemeId = DEFAULT_WEB_SERVER_THEME;
 
 type ChatAttachment = {
   fileName?: string;
@@ -59,6 +64,11 @@ type ChatRequest = {
 type AuthRequest = {
   idToken?: string;
   password?: string;
+};
+
+type ServerLabelUpdateRequest = {
+  label?: string;
+  theme?: string;
 };
 
 type WebAuthSession = {
@@ -172,25 +182,45 @@ function normalizeServerLabel(value: string): string {
   return value.trim().slice(0, 40) || DEFAULT_WEB_SERVER_LABEL;
 }
 
+function normalizeServerTheme(value: string): ServerThemeId {
+  const normalized = value.trim().toLowerCase();
+  return (SERVER_THEME_IDS as readonly string[]).includes(normalized) ? (normalized as ServerThemeId) : DEFAULT_WEB_SERVER_THEME;
+}
+
 function getServerLabel(): string {
   return webServerLabel;
 }
 
-async function loadServerLabel(): Promise<void> {
+function getServerTheme(): ServerThemeId {
+  return webServerTheme;
+}
+
+async function loadServerLabelConfig(): Promise<void> {
   try {
     const raw = await readFile(WEB_SERVER_LABEL_PATH, "utf8");
     webServerLabel = normalizeServerLabel(raw);
   } catch {
     webServerLabel = DEFAULT_WEB_SERVER_LABEL;
   }
+
+  try {
+    const rawTheme = await readFile(WEB_SERVER_THEME_PATH, "utf8");
+    webServerTheme = normalizeServerTheme(rawTheme);
+  } catch {
+    webServerTheme = DEFAULT_WEB_SERVER_THEME;
+  }
 }
 
-async function saveServerLabel(value: string): Promise<string> {
-  const next = normalizeServerLabel(value);
-  await writeFile(WEB_SERVER_LABEL_PATH, `${next}
+async function saveServerLabelConfig(value: string, theme: string): Promise<{ serverLabel: string; serverTheme: ServerThemeId }> {
+  const nextLabel = normalizeServerLabel(value);
+  const nextTheme = normalizeServerTheme(theme);
+  await writeFile(WEB_SERVER_LABEL_PATH, `${nextLabel}
 `, "utf8");
-  webServerLabel = next;
-  return next;
+  await writeFile(WEB_SERVER_THEME_PATH, `${nextTheme}
+`, "utf8");
+  webServerLabel = nextLabel;
+  webServerTheme = nextTheme;
+  return { serverLabel: nextLabel, serverTheme: nextTheme };
 }
 
 function pruneExpiredWebAuthSessions(): void {
@@ -1961,6 +1991,7 @@ async function handleApiState(req: IncomingMessage, res: ServerResponse): Promis
     json(res, 200, {
       chatId,
       serverLabel: getServerLabel(),
+      serverTheme: getServerTheme(),
       sessionSlot: session.shortId,
       sessionName: session.id,
       sessionNick: getSessionNick(session),
@@ -1982,9 +2013,9 @@ async function handleApiServerLabel(req: IncomingMessage, res: ServerResponse): 
     return;
   }
 
-  let payload: { label?: string };
+  let payload: ServerLabelUpdateRequest;
   try {
-    payload = JSON.parse(await readBody(req)) as { label?: string };
+    payload = JSON.parse(await readBody(req)) as ServerLabelUpdateRequest;
   } catch (err) {
     json(res, 400, { error: String(err) });
     return;
@@ -1997,8 +2028,8 @@ async function handleApiServerLabel(req: IncomingMessage, res: ServerResponse): 
   }
 
   try {
-    const serverLabel = await saveServerLabel(String(payload.label ?? ""));
-    json(res, 200, { ok: true, serverLabel });
+    const saved = await saveServerLabelConfig(String(payload.label ?? ""), String(payload.theme ?? DEFAULT_WEB_SERVER_THEME));
+    json(res, 200, { ok: true, ...saved });
   } catch (err) {
     json(res, 500, { error: String(err) });
   }
@@ -2247,6 +2278,7 @@ async function handleApiAuthStatus(req: IncomingMessage, res: ServerResponse): P
   json(res, 200, {
     authenticated: Boolean(session),
     serverLabel: getServerLabel(),
+    serverTheme: getServerTheme(),
     email: session?.email ?? null,
     method: session?.method ?? null,
     googleClientId: WEB_GOOGLE_CLIENT_ID || null,
@@ -2463,7 +2495,7 @@ export async function startWebServer(): Promise<void> {
   await interactionLogger.init();
   await cronStore.init();
   await chatJobStore.init({ resumeIncompleteJobs: WEB_CHAT_RESUME_INCOMPLETE_JOBS });
-  await loadServerLabel();
+  await loadServerLabelConfig();
 
   const resolved = await resolveCodexCommand(config.codexCommand);
   codexCommandResolved = resolved.command;
