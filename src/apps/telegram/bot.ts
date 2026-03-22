@@ -15,6 +15,7 @@ import { resolveClaudeRunner } from "../../core/commands/claudeResolver";
 import { InteractionLogger } from "../../core/logging/interactionLogger";
 import { CronStore } from "../../core/cron/store";
 import { buildOneShotCron } from "../../core/cron/oneshot";
+import { notifyCronWorkerWake } from "../../core/cron/wakeup";
 import { parseArgs } from "../../core/commands/args";
 import { LOG_COMMAND, SLOT_TARGET_HINT, TEXT } from "../../shared/constants";
 import { sessionSummary } from "../../shared/types";
@@ -290,6 +291,12 @@ next=${job.nextRunAt}`;
   }
   if (sub === "enable") {
     await cronStore.setEnabled(id, true);
+    try {
+      await notifyCronWorkerWake(`telegram cron enable ${id}`);
+    } catch (err) {
+      await cronStore.setEnabled(id, false);
+      throw new Error(`Cron worker wake failed: ${String(err)}`);
+    }
     return `Enabled ${id}`;
   }
   if (sub === "disable") {

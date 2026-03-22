@@ -973,6 +973,7 @@
     let sessionEventsSource = null;
     let sessionEventsSlot = '';
     let sessionRefreshInFlight = null;
+    const faviconEl = document.querySelector('link[rel="icon"]');
     let serverLabel = 'local';
     let serverTheme = 'auto';
     let codexVersionLoaded = false;
@@ -1336,6 +1337,14 @@
       return SERVER_THEMES[hashServerLabel(label) % SERVER_THEMES.length];
     }
 
+    function updateFavicon(color) {
+      if (!faviconEl || !color) {
+        return;
+      }
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="${color}"/><text x="50%" y="52%" dominant-baseline="middle" text-anchor="middle" font-family="Arial" font-size="34" fill="white">J</text></svg>`;
+      faviconEl.href = `data:image/svg+xml,${encodeURIComponent(svg)}`;
+    }
+
     function applyServerTheme(label, themeId = serverTheme) {
       const theme = resolveServerTheme(label, themeId);
       const root = document.documentElement;
@@ -1353,6 +1362,7 @@
       root.style.setProperty('--intro-grad-3', theme.introGrad3);
       root.style.setProperty('--top-grad-1', theme.topGrad1);
       root.style.setProperty('--top-grad-2', theme.topGrad2);
+      updateFavicon(theme.accent);
     }
 
     function applyServerLabel(nextLabel, nextTheme = serverTheme) {

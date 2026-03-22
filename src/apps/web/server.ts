@@ -16,6 +16,7 @@ import { resolveClaudeRunner } from "../../core/commands/claudeResolver";
 import { InteractionLogger } from "../../core/logging/interactionLogger";
 import { CronStore } from "../../core/cron/store";
 import { buildOneShotCron } from "../../core/cron/oneshot";
+import { notifyCronWorkerWake } from "../../core/cron/wakeup";
 import { parseArgs } from "../../core/commands/args";
 import { DEFAULT_LOCAL_CHAT_ID, LOG_COMMAND, SLOT_TARGET_HINT, TEXT } from "../../shared/constants";
 import { CommandResult, sessionSummary } from "../../shared/types";
@@ -1235,6 +1236,12 @@ next=${job.nextRunAt}`,
     store.ensureSessionForTarget(chatId, sessionTarget);
 
     const job = await cronStore.create({ chatId, sessionTarget, cron, prompt, timezone });
+    try {
+      await notifyCronWorkerWake(`web cron add ${job.id}`);
+    } catch (err) {
+      await cronStore.remove(job.id);
+      throw new Error(`Cron worker wake failed: ${String(err)}`);
+    }
     return {
       reply: `Created ${job.id}\nnext=${job.nextRunAt}`,
       sessionSlot: session.shortId,

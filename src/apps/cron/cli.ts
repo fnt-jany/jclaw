@@ -2,6 +2,7 @@ import dotenv from "dotenv";
 import { loadConfig } from "../../core/config/env";
 import { CronStore } from "../../core/cron/store";
 import { buildOneShotCron } from "../../core/cron/oneshot";
+import { notifyCronWorkerWake } from "../../core/cron/wakeup";
 import { SessionStore } from "../../core/session/sessionStore";
 import { DEFAULT_LOCAL_CHAT_ID, SLOT_TARGET_HINT, TEXT } from "../../shared/constants";
 
@@ -173,6 +174,12 @@ export async function startCronCli(): Promise<void> {
 
   if (parsed.cmd === "enable") {
     const job = await cronStore.setEnabled(id, true);
+    try {
+      await notifyCronWorkerWake(`cli cron enable ${id}`);
+    } catch (err) {
+      await cronStore.setEnabled(id, false);
+      throw new Error(`Cron worker wake failed: ${String(err)}`);
+    }
     console.log(job ? `Enabled ${id}` : `Not found: ${id}`);
     return;
   }

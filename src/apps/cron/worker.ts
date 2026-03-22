@@ -1,4 +1,5 @@
 import dotenv from "dotenv";
+import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
 import { loadConfig } from "../../core/config/env";
 import { SessionStore } from "../../core/session/sessionStore";
@@ -12,18 +13,21 @@ import { resolveClaudeRunner } from "../../core/commands/claudeResolver";
 import { InteractionLogger } from "../../core/logging/interactionLogger";
 import { CronJob, CronStore } from "../../core/cron/store";
 import { sendCronTelegramNotification } from "../../core/telegram/notify";
+import { getCronWakePort } from "../../core/cron/wakeup";
 
 dotenv.config({ path: path.resolve(__dirname, "../../../.env"), quiet: true });
 
 const config = loadConfig(process.env);
 const dataDir = path.dirname(config.dataFile);
 const interactionLogPath = path.join(dataDir, "interactions.json");
-const pollMs = Number(process.env.JCLAW_CRON_POLL_MS ?? "10000");
+const activePollMs = Math.max(5000, Number(process.env.JCLAW_CRON_ACTIVE_POLL_MS ?? "30000") || 30000);
+const wakePort = getCronWakePort();
 
 const cronStore = new CronStore(config.dbFile);
 const sessionStore = new SessionStore(config.dbFile);
 const interactionLogger = new InteractionLogger(interactionLogPath);
 const runningJobs = new Set<string>();
+let wakeTimer: NodeJS.Timeout | null = null;
 
 let codexCommandResolved: string | null = null;
 let geminiRunnerResolved: { command: string; argsTemplate: string } | null = null;
@@ -60,6 +64,49 @@ async function ensureClaudeRunnerResolved(): Promise<{ command: string; argsTemp
   claudeRunnerResolved = { command: resolved.command, argsTemplate: resolved.argsTemplate };
   console.log(`[cron] claude command resolved: ${resolved.command} (${resolved.source})`);
   return claudeRunnerResolved;
+}
+
+function clearWakeTimer(): void {
+  if (!wakeTimer) {
+    return;
+  }
+  clearTimeout(wakeTimer);
+  wakeTimer = null;
+}
+
+async function scheduleNextWake(reason: string): Promise<void> {
+  clearWakeTimer();
+  await cronStore.reload();
+
+  const hasEnabledJobs = cronStore.list().some((job) => job.enabled);
+  if (!hasEnabledJobs) {
+    console.log(`[cron] idle; awaiting wake notify (${reason})`);
+    return;
+  }
+
+  console.log(`[cron] next wake in ${activePollMs}ms (${reason}; mode=active)`);
+  wakeTimer = setTimeout(() => {
+    wakeTimer = null;
+    void tick();
+  }, activePollMs);
+}
+
+function isLoopbackRequest(req: IncomingMessage): boolean {
+  const remote = (req.socket.remoteAddress ?? "").trim();
+  return remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1";
+}
+
+function handleWakeRequest(req: IncomingMessage, res: ServerResponse): void {
+  if (!isLoopbackRequest(req)) {
+    res.writeHead(403, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify({ error: "Loopback only" }));
+    return;
+  }
+
+  res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+  res.end(JSON.stringify({ ok: true }));
+  clearWakeTimer();
+  void tick();
 }
 
 async function notifyWebSessionUpdate(input: { slot: string; sessionId: string; source: string; trigger: string }): Promise<void> {
@@ -241,6 +288,7 @@ async function executeJob(jobId: string): Promise<void> {
     }
 
     console.log(`[cron] job ${job.id} ran for slot ${session.shortId} (exit=${result.exitCode ?? "null"})`);
+    await scheduleNextWake(`job ${job.id} completed`);
   } catch (err) {
     const job = cronStore.get(jobId);
     if (job) {
@@ -249,6 +297,7 @@ async function executeJob(jobId: string): Promise<void> {
       await cronStore.markRunResult(jobId, false, String(err));
     }
     console.error(`[cron] job ${jobId} failed:`, err);
+    await scheduleNextWake(`job ${jobId} failed`);
   } finally {
     runningJobs.delete(jobId);
   }
@@ -260,27 +309,42 @@ async function tick(): Promise<void> {
   for (const job of jobs) {
     void executeJob(job.id);
   }
+  await scheduleNextWake(jobs.length > 0 ? `dispatched ${jobs.length} due job(s)` : "idle");
 }
 
 export async function startCronWorker(): Promise<void> {
+  const wakeServer = createServer((req, res) => {
+    const pathname = new URL(req.url ?? "/", `http://${req.headers.host ?? `127.0.0.1:${wakePort}`}`).pathname;
+    if (req.method === "POST" && pathname === "/wake") {
+      handleWakeRequest(req, res);
+      return;
+    }
+
+    res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify({ error: "Not found" }));
+  });
+
   await sessionStore.init();
   await cronStore.init();
   await interactionLogger.init();
 
   await ensureCodexCommandResolved();
+  await new Promise<void>((resolve, reject) => {
+    wakeServer.once("error", reject);
+    wakeServer.listen(wakePort, "127.0.0.1", () => resolve());
+  });
 
-  console.log(`[cron] worker started; poll=${pollMs}ms notify=${config.cronNotifyTelegram ? "on" : "off"}`);
+  console.log(`[cron] worker started; active_poll=${activePollMs}ms wake_port=${wakePort} notify=${config.cronNotifyTelegram ? "on" : "off"}`);
   await tick();
-  const timer = setInterval(() => {
-    void tick();
-  }, pollMs);
 
   process.once("SIGINT", () => {
-    clearInterval(timer);
+    clearWakeTimer();
+    wakeServer.close();
     process.exit(0);
   });
   process.once("SIGTERM", () => {
-    clearInterval(timer);
+    clearWakeTimer();
+    wakeServer.close();
     process.exit(0);
   });
 }
