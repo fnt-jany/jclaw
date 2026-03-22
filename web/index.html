@@ -1913,7 +1913,9 @@ ${row.error}` : '']
     }
 
     function applyState(data, options = { adoptCurrent: true }) {
-      applyServerLabel(data.serverLabel, data.serverTheme);
+      const nextServerLabel = typeof data.serverLabel === 'string' && data.serverLabel.trim() ? data.serverLabel : serverLabel;
+      const nextServerTheme = typeof data.serverTheme === 'string' && data.serverTheme.trim() ? data.serverTheme : serverTheme;
+      applyServerLabel(nextServerLabel, nextServerTheme);
       const prevSlot = currentSlot;
       if (options.adoptCurrent) {
         currentSlot = data.sessionSlot;
