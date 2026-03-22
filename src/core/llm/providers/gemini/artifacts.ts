@@ -46,11 +46,11 @@ export async function deleteGeminiSessionFiles(sessionId: string): Promise<void>
     return;
   }
 
-  const userProfile = process.env.USERPROFILE ?? "";
-  if (!userProfile) {
+  const home = process.env.USERPROFILE ?? process.env.HOME ?? "";
+  if (!home) {
     return;
   }
 
-  const root = path.join(userProfile, ".gemini");
+  const root = path.join(home, ".gemini");
   await walkAndDelete(root, sessionId).catch(() => undefined);
 }

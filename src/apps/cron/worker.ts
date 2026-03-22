@@ -4,6 +4,7 @@ import { loadConfig } from "../../core/config/env";
 import { SessionStore } from "../../core/session/sessionStore";
 import { runLlm } from "../../core/llm/execute";
 import { resolveRunnerForSession } from "../../core/llm/router";
+import { resolveLlmProviderForSession } from "../../core/llm/registry";
 import { applyPlanModePrompt } from "../../core/llm/promptMode";
 import { resolveCodexCommand } from "../../core/commands/codexResolver";
 import { resolveGeminiRunner } from "../../core/commands/geminiResolver";
@@ -12,7 +13,7 @@ import { InteractionLogger } from "../../core/logging/interactionLogger";
 import { CronJob, CronStore } from "../../core/cron/store";
 import { sendCronTelegramNotification } from "../../core/telegram/notify";
 
-dotenv.config({ quiet: true });
+dotenv.config({ path: path.resolve(__dirname, "../../../.env"), quiet: true });
 
 const config = loadConfig(process.env);
 const dataDir = path.dirname(config.dataFile);
@@ -24,9 +25,42 @@ const sessionStore = new SessionStore(config.dbFile);
 const interactionLogger = new InteractionLogger(interactionLogPath);
 const runningJobs = new Set<string>();
 
-let codexCommandResolved = "";
-let geminiRunnerResolved = { command: "", argsTemplate: "" };
-let claudeRunnerResolved = { command: "", argsTemplate: "" };
+let codexCommandResolved: string | null = null;
+let geminiRunnerResolved: { command: string; argsTemplate: string } | null = null;
+let claudeRunnerResolved: { command: string; argsTemplate: string } | null = null;
+
+async function ensureCodexCommandResolved(): Promise<string> {
+  if (codexCommandResolved) {
+    return codexCommandResolved;
+  }
+
+  const resolved = await resolveCodexCommand(config.codexCommand);
+  codexCommandResolved = resolved.command;
+  console.log(`[cron] codex command resolved: ${resolved.command} (${resolved.source})`);
+  return codexCommandResolved;
+}
+
+async function ensureGeminiRunnerResolved(): Promise<{ command: string; argsTemplate: string }> {
+  if (geminiRunnerResolved) {
+    return geminiRunnerResolved;
+  }
+
+  const resolved = await resolveGeminiRunner(config.geminiCommand, config.geminiArgsTemplate);
+  geminiRunnerResolved = { command: resolved.command, argsTemplate: resolved.argsTemplate };
+  console.log(`[cron] gemini command resolved: ${resolved.command} (${resolved.source})`);
+  return geminiRunnerResolved;
+}
+
+async function ensureClaudeRunnerResolved(): Promise<{ command: string; argsTemplate: string }> {
+  if (claudeRunnerResolved) {
+    return claudeRunnerResolved;
+  }
+
+  const resolved = await resolveClaudeRunner(config.claudeCommand, config.claudeArgsTemplate);
+  claudeRunnerResolved = { command: resolved.command, argsTemplate: resolved.argsTemplate };
+  console.log(`[cron] claude command resolved: ${resolved.command} (${resolved.source})`);
+  return claudeRunnerResolved;
+}
 
 async function notifyCronResult(input: {
   job: CronJob;
@@ -102,7 +136,14 @@ async function executeJob(jobId: string): Promise<void> {
     const planMode = sessionStore.getPlanMode(session.id);
     const effectivePrompt = applyPlanModePrompt(job.prompt, planMode);
 
-    const runner = resolveRunnerForSession(session, config, codexCommandResolved, geminiRunnerResolved, claudeRunnerResolved);
+    const provider = resolveLlmProviderForSession(session, config);
+    const runner = resolveRunnerForSession(
+      session,
+      config,
+      await ensureCodexCommandResolved(),
+      provider === "gemini" ? await ensureGeminiRunnerResolved() : { command: "", argsTemplate: "" },
+      provider === "claude" ? await ensureClaudeRunnerResolved() : { command: "", argsTemplate: "" }
+    );
     const startedAt = Date.now();
     const logChunk = (stream: "stdout" | "stderr", chunk: string): void => {
       const single = chunk.replace(/\r?\n/g, "\\n").trim();
@@ -198,14 +239,7 @@ export async function startCronWorker(): Promise<void> {
   await cronStore.init();
   await interactionLogger.init();
 
-  const resolved = await resolveCodexCommand(config.codexCommand);
-  codexCommandResolved = resolved.command;
-  const geminiResolved = await resolveGeminiRunner(config.geminiCommand, config.geminiArgsTemplate);
-  geminiRunnerResolved = { command: geminiResolved.command, argsTemplate: geminiResolved.argsTemplate };
-  console.log(`[cron] gemini command resolved: ${geminiResolved.command} (${geminiResolved.source})`);
-  const claudeResolved = await resolveClaudeRunner(config.claudeCommand, config.claudeArgsTemplate);
-  claudeRunnerResolved = { command: claudeResolved.command, argsTemplate: claudeResolved.argsTemplate };
-  console.log(`[cron] claude command resolved: ${claudeResolved.command} (${claudeResolved.source})`);
+  await ensureCodexCommandResolved();
 
   console.log(`[cron] worker started; poll=${pollMs}ms notify=${config.cronNotifyTelegram ? "on" : "off"}`);
   await tick();

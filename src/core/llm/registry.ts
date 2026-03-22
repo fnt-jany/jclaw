@@ -66,3 +66,23 @@ export function resolveLlmRunnerForSession(
     argsTemplate: config.codexArgsTemplate
   });
 }
+
+
+export function resolveLlmProviderForSession(
+  session: Session,
+  config: AppConfig,
+  registry: LlmRegistry = createLlmRegistry()
+): string {
+  const slot = session.shortId.trim().toUpperCase();
+  const mappedProvider = config.llmProviderMap.get(slot);
+
+  if (mappedProvider && registry.drivers[mappedProvider]) {
+    return mappedProvider;
+  }
+
+  if (config.geminiSessionSlots.has(slot) && registry.drivers.gemini) {
+    return "gemini";
+  }
+
+  return "codex";
+}

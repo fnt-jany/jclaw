@@ -21,10 +21,11 @@ export async function deleteCodexSessionFiles(sessionId: string): Promise<void> 
     return;
   }
 
-  const root = path.join(process.env.USERPROFILE ?? "", ".codex", "sessions");
-  if (!root) {
+  const home = process.env.USERPROFILE ?? process.env.HOME ?? "";
+  if (!home) {
     return;
   }
 
+  const root = path.join(home, ".codex", "sessions");
   await walkAndDelete(root, sessionId).catch(() => undefined);
 }
