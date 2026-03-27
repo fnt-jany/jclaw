@@ -72,6 +72,10 @@ type ServerLabelUpdateRequest = {
   theme?: string;
 };
 
+type CodexUpdateRequest = {
+  killRunning?: boolean;
+};
+
 type WebAuthSession = {
   token: string;
   email: string;
@@ -397,6 +401,11 @@ type CommandRunResult = {
   stdout: string;
   stderr: string;
   exitCode: number | null;
+};
+
+type RunningCodexProcess = {
+  pid: number;
+  commandLine: string;
 };
 
 function spawnLocalCommand(command: string, args: string[], options: { cwd?: string } = {}): ReturnType<typeof spawn> {
@@ -751,7 +760,13 @@ function startCodexUpdate(latestVersion: string): void {
 
   void (async () => {
     try {
+      const runningCodex = await listRunningCodexProcesses();
+      if (runningCodex.length > 0) {
+        const pidList = runningCodex.map((entry) => String(entry.pid)).join(", ");
+        throw new Error(`Codex update blocked because Codex is currently running (pid=${pidList}). Stop active Codex sessions and retry. Windows locks codex.exe during npm global updates.`);
+      }
       pushCodexUpdateLog("info", `Updating Codex to ${latestVersion}`);
+      await assertCodexUpdateSafe();
       const installResult = await runCommandCapture(NPM_COMMAND, ["install", "-g", `@openai/codex@${latestVersion}`], { timeoutMs: 10 * 60 * 1000 });
       if (installResult.exitCode !== 0) {
         throw new Error((installResult.stderr || installResult.stdout || "codex update failed").trim());
@@ -927,6 +942,91 @@ function scheduleChatWorkers(): void {
     })();
   }
 }
+
+async function listRunningCodexProcesses(): Promise<RunningCodexProcess[]> {
+  if (process.platform === "win32") {
+    const script = [
+      "$rows = Get-CimInstance Win32_Process | Where-Object {",
+      "  $_.Name -eq 'codex.exe' -or ($_.CommandLine -like '*@openai\\codex\\bin\\codex.js*')",
+      "} | Select-Object ProcessId, CommandLine | ConvertTo-Json -Compress",
+      "if (-not $rows) { '[]' } else { $rows }"
+    ].join("; ");
+    const result = await runCommandCapture("powershell.exe", ["-NoProfile", "-Command", script], { timeoutMs: 30000 });
+    if (result.exitCode !== 0) {
+      throw new Error((result.stderr || result.stdout || "failed to inspect running Codex processes").trim());
+    }
+    const raw = result.stdout.trim();
+    if (!raw) {
+      return [];
+    }
+    const parsed = JSON.parse(raw) as { ProcessId?: number; CommandLine?: string } | Array<{ ProcessId?: number; CommandLine?: string }>;
+    const items = Array.isArray(parsed) ? parsed : [parsed];
+    return items
+      .map((item) => ({ pid: Number(item.ProcessId ?? 0), commandLine: String(item.CommandLine ?? "").trim() }))
+      .filter((item) => item.pid > 0);
+  }
+
+  const result = await runCommandCapture("ps", ["-A", "-o", "pid=,command="], { timeoutMs: 30000 });
+  if (result.exitCode !== 0) {
+    throw new Error((result.stderr || result.stdout || "failed to inspect running Codex processes").trim());
+  }
+  return result.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const match = line.match(/^(\d+)\s+(.+)$/);
+      if (!match) {
+        return null;
+      }
+      return { pid: Number(match[1]), commandLine: match[2] } satisfies RunningCodexProcess;
+    })
+    .filter((item): item is RunningCodexProcess => Boolean(item))
+    .filter((item) => /\bcodex\b/.test(item.commandLine));
+}
+
+async function killRunningCodexProcesses(): Promise<number[]> {
+  const running = await listRunningCodexProcesses();
+  if (running.length === 0) {
+    return [];
+  }
+
+  const pids = running.map((item) => item.pid);
+  if (process.platform === "win32") {
+    const result = await runCommandCapture("powershell.exe", ["-NoProfile", "-Command", `Stop-Process -Id ${pids.join(',')} -Force`], { timeoutMs: 30000 });
+    if (result.exitCode !== 0) {
+      throw new Error((result.stderr || result.stdout || "failed to stop running Codex processes").trim());
+    }
+  } else {
+    const result = await runCommandCapture("kill", ["-9", ...pids.map((pid) => String(pid))], { timeoutMs: 30000 });
+    if (result.exitCode !== 0) {
+      throw new Error((result.stderr || result.stdout || "failed to stop running Codex processes").trim());
+    }
+  }
+
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  return pids;
+}
+
+async function assertCodexUpdateSafe(): Promise<void> {
+  const running = await listRunningCodexProcesses();
+  if (running.length === 0) {
+    return;
+  }
+  const preview = running
+    .slice(0, 4)
+    .map((item) => `pid=${item.pid} ${item.commandLine}`)
+    .join("\n");
+  throw new Error(
+    [
+      "Codex update is blocked because Codex is currently running on this PC.",
+      "Stop active Codex sessions and retry.",
+      `Running Codex processes: ${running.length}`,
+      preview
+    ].join("\n")
+  );
+}
+
 
 function json(res: ServerResponse, status: number, payload: unknown): void {
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
@@ -2152,6 +2252,11 @@ async function handleApiCodexVersionStatus(req: IncomingMessage, res: ServerResp
     return;
   }
 
+  let payload: CodexUpdateRequest = {};
+  try {
+    payload = JSON.parse(await readBody(req)) as CodexUpdateRequest;
+  } catch {}
+
   try {
     const snapshot = await collectCodexVersionSnapshot();
     if (!codexUpdateStatus.running && codexUpdateStatus.logs.length === 0) {
@@ -2209,6 +2314,11 @@ async function handleApiCodexUpdate(req: IncomingMessage, res: ServerResponse): 
     return;
   }
 
+  let payload: CodexUpdateRequest = {};
+  try {
+    payload = JSON.parse(await readBody(req)) as CodexUpdateRequest;
+  } catch {}
+
   try {
     const snapshot = await collectCodexVersionSnapshot();
     if (snapshot.error) {
@@ -2225,6 +2335,39 @@ async function handleApiCodexUpdate(req: IncomingMessage, res: ServerResponse): 
     if (!snapshot.latestVersion) {
       json(res, 500, { error: "Could not determine latest Codex version." });
       return;
+    }
+
+    const runningCodex = await listRunningCodexProcesses();
+    if (runningCodex.length > 0 && !payload.killRunning) {
+      json(res, 409, {
+        error: `Codex is currently running (pid=${runningCodex.map((item) => item.pid).join(", ")})`,
+        requiresConfirmation: true,
+        runningCodexProcesses: runningCodex,
+        updateStatus: codexUpdateStatus,
+        currentVersion: snapshot.currentVersion,
+        latestVersion: snapshot.latestVersion,
+        updateAvailable: snapshot.updateAvailable
+      });
+      return;
+    }
+
+    if (runningCodex.length > 0 && payload.killRunning) {
+      const killedPids = await killRunningCodexProcesses();
+      const remainingCodex = await listRunningCodexProcesses();
+      if (remainingCodex.length > 0) {
+        json(res, 409, {
+          error: `Could not stop all running Codex processes (remaining pid=${remainingCodex.map((item) => item.pid).join(", ")})`,
+          requiresConfirmation: true,
+          runningCodexProcesses: remainingCodex,
+          killedPids,
+          updateStatus: codexUpdateStatus,
+          currentVersion: snapshot.currentVersion,
+          latestVersion: snapshot.latestVersion,
+          updateAvailable: snapshot.updateAvailable
+        });
+        return;
+      }
+      pushCodexUpdateLog("info", `Stopped running Codex processes: ${killedPids.join(", ")}`);
     }
 
     if (!snapshot.updateAvailable) {

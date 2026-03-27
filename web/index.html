@@ -223,11 +223,12 @@
     }
 
     .codex-progress {
+      position: relative;
       max-width: min(420px, 100%);
       border: 1px solid var(--line);
       border-radius: 10px;
       background: #fff;
-      padding: 8px 10px;
+      padding: 8px 34px 8px 10px;
       display: grid;
       gap: 6px;
       font-size: 12px;
@@ -246,6 +247,24 @@
 
     .codex-progress-line.success {
       color: #18794e;
+    }
+
+    .codex-progress-close {
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      border: 0;
+      background: transparent;
+      color: var(--text-soft);
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1;
+      padding: 2px 4px;
+      opacity: 0.8;
+    }
+
+    .codex-progress-close:hover {
+      opacity: 1;
     }
 
     .btn-update {
@@ -996,6 +1015,9 @@
     };
     let codexUpdatePollTimer = null;
     let codexVersionMarker = '';
+    let codexUpdateDismissed = false;
+    let codexUpdateDismissKey = '';
+    const CODEX_UPDATE_DISMISS_KEY = 'jclaw_codex_update_dismissed';
     let claudeVersionLoaded = false;
     let claudeVersionState = {
       currentVersion: null,
@@ -1016,6 +1038,9 @@
     };
     let claudeUpdatePollTimer = null;
     let claudeVersionMarker = '';
+    let claudeUpdateDismissed = false;
+    let claudeUpdateDismissKey = '';
+    const CLAUDE_UPDATE_DISMISS_KEY = 'jclaw_claude_update_dismissed';
 
     const sessionLogs = new Map();
     const sessionNickBySlot = new Map();
@@ -1411,6 +1436,38 @@
       }
     }
 
+
+    function loadDismissedUpdateKey(storageKey) {
+      try {
+        return sessionStorage.getItem(storageKey) || '';
+      } catch (_) {
+        return '';
+      }
+    }
+
+    function saveDismissedUpdateKey(storageKey, value) {
+      try {
+        if (value) {
+          sessionStorage.setItem(storageKey, value);
+        } else {
+          sessionStorage.removeItem(storageKey);
+        }
+      } catch (_) {}
+    }
+
+    function getUpdateDismissKey(updateStatus) {
+      const lastLog = Array.isArray(updateStatus.logs) && updateStatus.logs.length ? updateStatus.logs[updateStatus.logs.length - 1] : null;
+      return [
+        updateStatus.running ? '1' : '0',
+        updateStatus.startedAt || '',
+        updateStatus.finishedAt || '',
+        String(updateStatus.success),
+        updateStatus.error || '',
+        lastLog && lastLog.ts ? lastLog.ts : '',
+        lastLog && lastLog.message ? lastLog.message : ''
+      ].join('|');
+    }
+
     function formatCodexProgressLines(updateStatus) {
       if (!updateStatus.running && updateStatus.success === true && !updateStatus.error) {
         return [];
@@ -1453,10 +1510,21 @@
 
       const lines = formatCodexProgressLines(codexUpdateState);
       codexUpdateProgressEl.innerHTML = '';
-      if (!lines.length) {
+      if ((!codexUpdateState.running && codexUpdateDismissed) || !lines.length) {
         codexUpdateProgressEl.classList.add('hidden');
       } else {
         codexUpdateProgressEl.classList.remove('hidden');
+        const closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.className = 'codex-progress-close';
+        closeBtn.textContent = 'x';
+        closeBtn.title = 'Close';
+        closeBtn.addEventListener('click', () => {
+          codexUpdateDismissed = true;
+          saveDismissedUpdateKey(CODEX_UPDATE_DISMISS_KEY, codexUpdateDismissKey);
+          renderCodexVersionPanel();
+        });
+        codexUpdateProgressEl.appendChild(closeBtn);
         for (const line of lines) {
           const div = document.createElement('div');
           div.className = `codex-progress-line ${line.level || 'info'}`;
@@ -1488,13 +1556,17 @@
         };
       }
 
+      const nextDismissKey = getUpdateDismissKey(codexUpdateState);
+      if (nextDismissKey !== codexUpdateDismissKey) {
+        codexUpdateDismissKey = nextDismissKey;
+      }
+      codexUpdateDismissed = !codexUpdateState.running && loadDismissedUpdateKey(CODEX_UPDATE_DISMISS_KEY) === codexUpdateDismissKey;
       renderCodexVersionPanel();
       persistCodexVersionCache();
       if (codexUpdateState.running) {
         scheduleCodexUpdatePoll();
       } else {
         clearCodexUpdatePoll();
-      clearClaudeUpdatePoll();
       }
     }
 
@@ -1582,10 +1654,21 @@
 
       const lines = formatClaudeProgressLines(claudeUpdateState);
       claudeUpdateProgressEl.innerHTML = '';
-      if (!lines.length) {
+      if ((!claudeUpdateState.running && claudeUpdateDismissed) || !lines.length) {
         claudeUpdateProgressEl.classList.add('hidden');
       } else {
         claudeUpdateProgressEl.classList.remove('hidden');
+        const closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.className = 'codex-progress-close';
+        closeBtn.textContent = 'x';
+        closeBtn.title = 'Close';
+        closeBtn.addEventListener('click', () => {
+          claudeUpdateDismissed = true;
+          saveDismissedUpdateKey(CLAUDE_UPDATE_DISMISS_KEY, claudeUpdateDismissKey);
+          renderClaudeVersionPanel();
+        });
+        claudeUpdateProgressEl.appendChild(closeBtn);
         for (const line of lines) {
           const div = document.createElement('div');
           div.className = `codex-progress-line ${line.level || 'info'}`;
@@ -1634,6 +1717,11 @@
         };
       }
 
+      const nextDismissKey = getUpdateDismissKey(claudeUpdateState);
+      if (nextDismissKey !== claudeUpdateDismissKey) {
+        claudeUpdateDismissKey = nextDismissKey;
+      }
+      claudeUpdateDismissed = !claudeUpdateState.running && loadDismissedUpdateKey(CLAUDE_UPDATE_DISMISS_KEY) === claudeUpdateDismissKey;
       renderClaudeVersionPanel();
       persistClaudeVersionCache();
       if (claudeUpdateState.running) {
@@ -2086,6 +2174,32 @@ ${row.error}` : '']
       appendBubble(`[saved] ${fileName}`, 'bot', currentSlot);
     }
 
+    async function requestCodexUpdate(killRunning = false) {
+      const res = await fetch(apiUrl('/api/codex/update'), {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ killRunning })
+      });
+      const rawText = await res.text().catch(() => '');
+      let data = {};
+      try {
+        data = rawText ? JSON.parse(rawText) : {};
+      } catch {
+        data = {};
+      }
+      if (res.status === 409 && data && data.requiresConfirmation) {
+        return { requiresConfirmation: true, data };
+      }
+      if (!res.ok) {
+        const detail = typeof data.error === 'string' && data.error.trim()
+          ? data.error.trim()
+          : (rawText || '').trim().replace(/\s+/g, ' ').slice(0, 220) || 'request failed';
+        throw new Error(`${detail} (POST /api/codex/update, status=${res.status})`);
+      }
+      return { requiresConfirmation: false, data };
+    }
+
     async function sendMessage(text, options = { adoptCurrent: true }) {
       const data = await api('/api/chat', {
         method: 'POST',
@@ -2450,12 +2564,20 @@ ${row.error}` : '']
     codexUpdateBtnEl.addEventListener('click', async () => {
       codexUpdateBtnEl.disabled = true;
       try {
-        const data = await api('/api/codex/update', {
-          method: 'POST',
-          body: '{}'
-        });
+        let result = await requestCodexUpdate(false);
+        if (result.requiresConfirmation) {
+          const pids = Array.isArray(result.data.runningCodexProcesses)
+            ? result.data.runningCodexProcesses.map((item) => item.pid).join(', ')
+            : '';
+          const confirmed = window.confirm(`Codex is running right now. Stop running Codex processes and continue update?${pids ? `\n\nPID: ${pids}` : ''}`);
+          if (!confirmed) {
+            codexUpdateBtnEl.disabled = false;
+            return;
+          }
+          result = await requestCodexUpdate(true);
+        }
         codexVersionLoaded = true;
-        applyCodexVersionStatus(data);
+        applyCodexVersionStatus(result.data);
       } catch (err) {
         codexUpdateState = {
           ...codexUpdateState,
