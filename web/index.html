@@ -1856,6 +1856,12 @@ ${row.error}` : '']
       authOverlayEl.classList.add('hidden');
       appEl.classList.remove('hidden');
       resizeMessageInput();
+      requestAnimationFrame(() => {
+        renderCurrentLog();
+        if (!autoScrollLocked) {
+          scrollLogToBottom();
+        }
+      });
       messageEl.focus();
     }
 

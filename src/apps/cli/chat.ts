@@ -52,7 +52,7 @@ function printHelp(): void {
       "Commands:",
       "/help                Show this help",
       "/where               Show current slot and session name",
-      "/new                 Create/switch to next slot (A->Z cycle)",
+      "/new                 Start a new chat in the current slot",
       `/session <${SLOT_TARGET_HINT}>    Switch session`,
       `${LOG_COMMAND} Toggle interaction logging`,
       "/plan <on|off|status> Toggle plan mode",

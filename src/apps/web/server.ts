@@ -1510,9 +1510,9 @@ async function handleCommand(chatId: string, session: Session, cmdLine: string):
   }
 
   if (cmd === "/new") {
-    const next = store.createAndActivateSession(chatId, "web");
+    const next = store.recreateSessionAtSlot(chatId, session.shortId, "web");
     return {
-      reply: `Switched to session slot ${next.shortId}`,
+      reply: `Started new chat in session slot ${next.shortId}`,
       sessionSlot: next.shortId,
       sessionName: next.id,
       logEnabled: interactionLogger.isEnabled()
