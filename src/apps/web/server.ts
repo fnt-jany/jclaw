@@ -60,6 +60,7 @@ type ChatRequest = {
   slot?: string;
   message?: string;
   attachment?: ChatAttachment;
+  attachments?: ChatAttachment[];
 };
 
 type AuthRequest = {
@@ -1903,7 +1904,16 @@ async function handleApiChat(req: IncomingMessage, res: ServerResponse): Promise
   }
 
   const message = (payload.message ?? "").trim();
-  const hasAttachment = Boolean(payload.attachment?.contentBase64);
+  const attachments = [
+    ...(Array.isArray(payload.attachments) ? payload.attachments : []),
+    ...(payload.attachment?.contentBase64 ? [payload.attachment] : [])
+  ].filter((attachment) => Boolean(attachment?.contentBase64));
+  const hasAttachment = attachments.length > 0;
+
+  if (attachments.length > WEB_UPLOAD_MAX_FILES) {
+    json(res, 400, { error: `too many attachments (max ${WEB_UPLOAD_MAX_FILES})` });
+    return;
+  }
 
   if (!message && !hasAttachment) {
     json(res, 400, { error: "message or attachment is required" });

@@ -450,7 +450,7 @@
     .composer {
       grid-row: 5;
       display: grid;
-      grid-template-columns: minmax(130px, 180px) minmax(0, 1fr) auto;
+      grid-template-columns: 120px minmax(0, 1fr) 88px;
       gap: 8px;
       padding: 12px;
       border-top: 1px solid var(--line);
@@ -464,6 +464,62 @@
     #fileInput {
       width: 100%;
       min-width: 0;
+    }
+
+    .file-picker {
+      grid-column: 1;
+      grid-row: 1;
+      display: grid;
+      gap: 4px;
+      width: 120px;
+      min-width: 120px;
+      align-self: start;
+    }
+
+    .file-picker-btn {
+      width: auto;
+      min-width: 0;
+      padding: 7px 10px;
+      font-size: 12px;
+    }
+
+    .attachment-list {
+      grid-column: 2 / 3;
+      grid-row: 1;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      min-width: 0;
+      align-self: start;
+    }
+
+    .attachment-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      max-width: 100%;
+      padding: 6px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #f7f8fb;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .attachment-chip-name {
+      max-width: 120px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .attachment-chip-remove {
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      padding: 0;
+      line-height: 1;
+      cursor: pointer;
     }
 
     input,
@@ -702,25 +758,30 @@
       }
 
       .composer {
-        grid-template-columns: minmax(0, 1fr) auto;
-        grid-template-areas:
-          "file file"
-          "message send";
+        grid-template-columns: 120px minmax(0, 1fr) 88px;
         padding: 8px 8px calc(8px + env(safe-area-inset-bottom));
       }
 
-      #fileInput {
-        grid-area: file;
+      .file-picker {
+        grid-column: 1;
+        grid-row: 1;
+      }
+
+      .attachment-list {
+        grid-column: 2 / 4;
+        grid-row: 1;
       }
 
       #message {
-        grid-area: message;
+        grid-column: 1 / 3;
+        grid-row: 2;
         min-width: 0;
       }
 
       .composer > button[type="submit"] {
-        grid-area: send;
-        width: auto;
+        grid-column: 3;
+        grid-row: 2;
+        width: 88px;
       }
 
       .top-actions {
@@ -930,7 +991,11 @@
     <button id="jumpLatestBtn" type="button" class="jump-latest">Back to latest</button>
 
     <form id="composer" class="composer">
-      <input id="fileInput" type="file" />
+      <div class="file-picker">
+        <button id="filePickerBtn" type="button" class="btn-muted file-picker-btn">Choose Files</button>
+        <input id="fileInput" type="file" multiple hidden />
+      </div>
+      <div id="attachmentList" class="attachment-list hidden"></div>
       <textarea id="message" rows="1" autocomplete="off" placeholder="Type message or /command"></textarea>
       <button type="submit">Send</button>
     </form>
@@ -976,7 +1041,9 @@
     const saveToDateEl = document.getElementById('saveToDate');
     const saveLogBtnEl = document.getElementById('saveLogBtn');
     const saveLogCancelBtnEl = document.getElementById('saveLogCancelBtn');
+    const filePickerBtnEl = document.getElementById('filePickerBtn');
     const fileInputEl = document.getElementById('fileInput');
+    const attachmentListEl = document.getElementById('attachmentList');
     const messageEl = document.getElementById('message');
     const composerEl = document.getElementById('composer');
 
@@ -1047,6 +1114,7 @@
     const hydratedSlots = new Set();
     const hydratingSlots = new Map();
     const sessionInputState = new Map();
+    let pendingAttachments = [];
     const activeJobStreams = new Map();
     const pendingBubbleByJob = new Map();
     const syncingPendingSlots = new Set();
@@ -1218,6 +1286,30 @@
         logEl.scrollTop = prevTop;
       }
       updateJumpLatestButton();
+    }
+
+    function renderPendingAttachments() {
+      attachmentListEl.innerHTML = '';
+      attachmentListEl.classList.toggle('hidden', pendingAttachments.length === 0);
+      for (const file of pendingAttachments) {
+        const chip = document.createElement('div');
+        chip.className = 'attachment-chip';
+        const name = document.createElement('span');
+        name.className = 'attachment-chip-name';
+        name.textContent = file.name;
+        const removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'attachment-chip-remove';
+        removeBtn.textContent = 'x';
+        removeBtn.title = 'Remove';
+        removeBtn.addEventListener('click', () => {
+          pendingAttachments = pendingAttachments.filter((item) => item !== file);
+          renderPendingAttachments();
+        });
+        chip.appendChild(name);
+        chip.appendChild(removeBtn);
+        attachmentListEl.appendChild(chip);
+      }
     }
 
     function appendBubble(text, type = 'bot', slot = currentSlot) {
@@ -2518,6 +2610,25 @@ ${row.error}` : '']
       await ensureAuth();
     });
 
+    filePickerBtnEl.addEventListener('click', () => {
+      fileInputEl.click();
+    });
+
+    fileInputEl.addEventListener('change', () => {
+      const files = Array.from(fileInputEl.files || []);
+      if (!files.length) {
+        return;
+      }
+      for (const file of files) {
+        pendingAttachments.push(file);
+      }
+      if (pendingAttachments.length > 50) {
+        pendingAttachments = pendingAttachments.slice(0, 50);
+      }
+      fileInputEl.value = '';
+      renderPendingAttachments();
+    });
+
     messageEl.addEventListener('input', () => {
       const state = getInputState();
       state.draft = messageEl.value;
@@ -2692,8 +2803,8 @@ ${row.error}` : '']
       const wasAtBottom = isLogNearBottom();
       const rawText = messageEl.value;
       const text = rawText.trim();
-      const file = fileInputEl.files && fileInputEl.files[0] ? fileInputEl.files[0] : null;
-      if (!text && !file) return;
+      const files = [...pendingAttachments];
+      if (!text && files.length === 0) return;
 
       const state = getInputState();
       if (text) {
@@ -2706,13 +2817,14 @@ ${row.error}` : '']
       state.historyDraft = '';
 
       const slotAtSend = currentSlot;
-      const userPreview = file ? `${text ? `${text}
-
-` : ''}[file] ${file.name}` : text;
+      const filePreview = files.map((file) => `[file] ${file.name}`).join('\n');
+      const userPreview = [text, filePreview].filter(Boolean).join('\n\n');
       appendBubble(userPreview, 'user', slotAtSend);
       messageEl.value = '';
       state.draft = '';
+      pendingAttachments = [];
       fileInputEl.value = '';
+      renderPendingAttachments();
       resizeMessageInput();
       const pending = appendBubble('processing...', 'bot', slotAtSend);
       if (wasAtBottom) {
@@ -2727,13 +2839,16 @@ ${row.error}` : '']
 
       try {
         const payload = { message: text, slot: slotAtSend };
-        if (file) {
-          const contentBase64 = await readFileAsBase64(file);
-          payload.attachment = {
-            fileName: file.name,
-            mimeType: file.type || 'application/octet-stream',
-            contentBase64
-          };
+        if (files.length) {
+          payload.attachments = [];
+          for (const file of files) {
+            const contentBase64 = await readFileAsBase64(file);
+            payload.attachments.push({
+              fileName: file.name,
+              mimeType: file.type || 'application/octet-stream',
+              contentBase64
+            });
+          }
         }
 
         const data = await api('/api/chat', {
