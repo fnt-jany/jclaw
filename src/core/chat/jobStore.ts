@@ -226,6 +226,22 @@ export class ChatJobStore {
     return this.get(jobId);
   }
 
+  cancelPendingForSession(chatId: string, sessionId: string, errorText: string): number {
+    const now = new Date().toISOString();
+    const result = this.db
+      .prepare(
+        `UPDATE chat_jobs
+         SET status = 'failed',
+             updated_at = ?,
+             finished_at = ?,
+             error = ?
+         WHERE chat_id = ? AND session_id = ? AND status = 'pending'`
+      )
+      .run(now, now, errorText, chatId, sessionId);
+
+    return result.changes;
+  }
+
   prune(maxRows: number): void {
     const max = Math.max(100, maxRows);
     const countRow = this.db

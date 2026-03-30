@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { parseArgsStringToArgv } from "string-argv";
 import type { ReasoningEffort } from "../session/sessionStore";
 import type { LlmProviderId } from "./types";
@@ -35,6 +35,61 @@ type GeminiSessionRow = {
   title: string;
   id: string;
 };
+
+const activeSessionChildren = new Map<string, Set<ReturnType<typeof spawn>>>();
+
+function registerActiveChild(sessionId: string, child: ReturnType<typeof spawn>): void {
+  const set = activeSessionChildren.get(sessionId) ?? new Set<ReturnType<typeof spawn>>();
+  set.add(child);
+  activeSessionChildren.set(sessionId, set);
+}
+
+function unregisterActiveChild(sessionId: string, child: ReturnType<typeof spawn>): void {
+  const set = activeSessionChildren.get(sessionId);
+  if (!set) {
+    return;
+  }
+  set.delete(child);
+  if (set.size === 0) {
+    activeSessionChildren.delete(sessionId);
+  }
+}
+
+function terminateProcessTree(pid: number): void {
+  if (process.platform === "win32") {
+    const child = execFile("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true }, () => {});
+    child.unref();
+    return;
+  }
+
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // ignore already-exited processes
+  }
+}
+
+export function cancelLlmRuns(sessionId: string): boolean {
+  const set = activeSessionChildren.get(sessionId);
+  if (!set || set.size === 0) {
+    return false;
+  }
+
+  for (const child of [...set]) {
+    const pid = child.pid;
+    if (typeof pid === "number" && pid > 0) {
+      terminateProcessTree(pid);
+    } else {
+      try {
+        child.kill();
+      } catch {
+        // ignore kill errors for already-exited processes
+      }
+    }
+  }
+
+  return true;
+}
 
 function getDefaultCodexModel(): string {
   return (process.env.CODEX_DEFAULT_MODEL ?? "gpt-5.4").trim() || "gpt-5.4";
@@ -317,7 +372,12 @@ export async function runLlmProcess(input: RunLlmProcessInput): Promise<RunLlmPr
     let lastActivityChunk = "";
     let completionHintAt: number | null = null;
     const progressIntervalMs = Math.max(1000, input.progressIntervalMs ?? 15000);
-    const inactivityTimeoutMs = Math.max(1000, input.inactivityTimeoutMs ?? 300000);
+    const configuredInactivityTimeoutMs = Number.parseInt(process.env.LLM_INACTIVITY_TIMEOUT_MS ?? "", 10);
+    const inactivityTimeoutMs = Math.max(
+      1000,
+      input.inactivityTimeoutMs ??
+        (Number.isFinite(configuredInactivityTimeoutMs) ? configuredInactivityTimeoutMs : 600000)
+    );
     const completionGraceMs = Math.max(5000, input.completionGraceMs ?? 15000);
     const progressTimer =
       input.onProgress
@@ -342,6 +402,8 @@ export async function runLlmProcess(input: RunLlmProcessInput): Promise<RunLlmPr
         windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"]
       });
+      registerActiveChild(input.sessionId, child);
+      child.once("close", () => unregisterActiveChild(input.sessionId, child));
 
       if (stdinPrompt !== null) {
         child.stdin?.write(stdinPrompt);

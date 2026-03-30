@@ -4,7 +4,7 @@ import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { loadConfig } from "../../core/config/env";
 import { SessionStore, Session } from "../../core/session/sessionStore";
-import { runLlm } from "../../core/llm/execute";
+import { cancelSessionRuns, runLlm } from "../../core/llm/execute";
 import { resolveRunnerForSession } from "../../core/llm/router";
 import { formatAllModelCatalogs, formatModelCatalog, hasModelCatalog } from "../../core/llm/modelCatalog";
 import { applyPlanModePrompt } from "../../core/llm/promptMode";
@@ -56,6 +56,7 @@ function printHelp(): void {
       `/session <${SLOT_TARGET_HINT}>    Switch session`,
       `${LOG_COMMAND} Toggle interaction logging`,
       "/plan <on|off|status> Toggle plan mode",
+      "/cancel              Cancel the running request in current slot",
       "/reason <none|low|medium|high|status> Set reasoning effort",
       "/model <name|status|clear> Set model override for this slot",
       "/models [current|all|codex|gemini|claude] Show model arguments",
@@ -207,6 +208,13 @@ export async function startCliChat(): Promise<void> {
         output.write(`${sessionSummary(session)}\n`);
         continue;
       }
+      if (line === "/cancel") {
+        output.write(cancelSessionRuns(session.id) ? `Cancelled running request in session ${session.shortId}
+` : `No running request in session ${session.shortId}
+`);
+        continue;
+      }
+
       if (line === "/new") {
         session = store.createAndActivateSession(parsed.chatId, "cli");
         output.write(`Switched to slot ${session.shortId} (${session.id})\n`);

@@ -5,7 +5,7 @@ import { Telegraf } from "telegraf";
 import type { Context } from "telegraf";
 import { loadConfig } from "../../core/config/env";
 import { SessionStore } from "../../core/session/sessionStore";
-import { runLlm } from "../../core/llm/execute";
+import { cancelSessionRuns, runLlm } from "../../core/llm/execute";
 import { resolveRunnerForSession } from "../../core/llm/router";
 import { formatAllModelCatalogs, formatModelCatalog, hasModelCatalog } from "../../core/llm/modelCatalog";
 import { applyPlanModePrompt } from "../../core/llm/promptMode";
@@ -458,6 +458,7 @@ function attachHandlers(bot: Telegraf, resolvedCodexCommand: string): void {
       "/cron ... (/c) - schedule prompts",
       "/slot <list|show|bind> (/t) - manage slot-provider-thread mapping",
       "/plan <on|off|status> (/p) - toggle plan mode",
+      "/cancel - cancel the running request in current session",
       "/reason <none|low|medium|high|status> - set reasoning effort per session",
       "/model <name|status|clear> - set model override per session",
       "/models [current|all|codex|gemini|claude] - show model arguments",
@@ -493,6 +494,18 @@ function attachHandlers(bot: Telegraf, resolvedCodexCommand: string): void {
       (r) => `${r.id} | ${r.timestamp} | exit=${r.exitCode ?? "null"} | ${r.durationMs}ms | ${r.input.slice(0, 60)}`
     );
     await ctx.reply(lines.join("\n"));
+  });
+
+  bot.command("cancel", async (ctx) => {
+    const chatId = chatIdOf(ctx);
+    if (!chatId || !isAllowed(chatId)) {
+      await ctx.reply("Access denied.");
+      return;
+    }
+
+    const session = store.getOrCreateSessionByChat(chatId, "telegram");
+    const canceled = cancelSessionRuns(session.id);
+    await ctx.reply(canceled ? `Cancelled running request in session ${session.shortId}` : `No running request in session ${session.shortId}`);
   });
 
   bot.command("new", async (ctx) => {

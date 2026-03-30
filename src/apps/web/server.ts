@@ -6,7 +6,7 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { loadConfig } from "../../core/config/env";
 import { SessionStore, Session } from "../../core/session/sessionStore";
-import { runLlm } from "../../core/llm/execute";
+import { cancelSessionRuns, runLlm } from "../../core/llm/execute";
 import { resolveRunnerForSession } from "../../core/llm/router";
 import { formatAllModelCatalogs, formatModelCatalog, hasModelCatalog } from "../../core/llm/modelCatalog";
 import { applyPlanModePrompt } from "../../core/llm/promptMode";
@@ -1497,6 +1497,7 @@ async function handleCommand(chatId: string, session: Session, cmdLine: string):
         "/whoami",
         LOG_COMMAND,
         "/plan <on|off|status>",
+        "/cancel",
         "/reason <none|low|medium|high|status>",
         "/model <name|status|clear>",
         "/models [current|all|codex|gemini|claude]",
@@ -1644,6 +1645,28 @@ async function handleCommand(chatId: string, session: Session, cmdLine: string):
     };
   }
 
+  if (cmd === "/cancel") {
+    const canceledRunning = cancelSessionRuns(session.id);
+    const canceledPending = chatJobStore.cancelPendingForSession(chatId, session.id, "Cancelled by user via /cancel");
+    if (canceledPending > 0) {
+      scheduleChatWorkers();
+    }
+
+    const parts = [];
+    if (canceledRunning) {
+      parts.push(`Cancelled running request in session ${session.shortId}`);
+    }
+    if (canceledPending > 0) {
+      parts.push(`Removed ${canceledPending} queued request${canceledPending === 1 ? "" : "s"} in session ${session.shortId}`);
+    }
+
+    return {
+      reply: parts.length ? parts.join("\n") : `No running or queued request in session ${session.shortId}`,
+      sessionSlot: session.shortId,
+      sessionName: session.id,
+      logEnabled: interactionLogger.isEnabled()
+    };
+  }
 
   if (cmd === "/reason") {
     const mode = (parts[1] ?? "status").toLowerCase();
