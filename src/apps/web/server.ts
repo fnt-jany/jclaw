@@ -1958,11 +1958,15 @@ async function handleApiChat(req: IncomingMessage, res: ServerResponse): Promise
 
     let effectivePrompt = message;
     if (hasAttachment) {
-      const localPath = await saveWebAttachment(payload.attachment ?? {});
+      const localPaths: string[] = [];
+      for (const attachment of attachments) {
+        localPaths.push(await saveWebAttachment(attachment));
+      }
+      const fileLabel = localPaths.length === 1 ? "file" : "files";
       effectivePrompt = [
-        "User uploaded a file from web chat.",
-        `Local file path: ${localPath}`,
-        "Open and analyze the file directly.",
+        `User uploaded ${localPaths.length} ${fileLabel} from web chat.`,
+        ...localPaths.map((localPath, index) => `Local file path ${index + 1}: ${localPath}`),
+        "Open and analyze the uploaded file(s) directly.",
         message ? `User request: ${message}` : "If no explicit request, summarize the file contents."
       ].join("\n");
     }
