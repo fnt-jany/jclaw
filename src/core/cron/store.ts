@@ -2,6 +2,8 @@ import { randomBytes } from "node:crypto";
 import { CronExpressionParser } from "cron-parser";
 import { openDb } from "../db/database";
 
+const DEFAULT_CRON_TIMEZONE = "Asia/Seoul";
+
 export type CronJob = {
   id: string;
   enabled: boolean;
@@ -72,7 +74,8 @@ export class CronStore {
   async create(input: CreateCronJobInput): Promise<CronJob> {
     const now = new Date().toISOString();
     const id = `cj_${randomBytes(3).toString("hex")}`;
-    const nextRunAt = computeNextRunAt(input.cron, input.timezone ?? null, new Date());
+    const timezone = normalizeCronTimezone(input.timezone ?? null);
+    const nextRunAt = computeNextRunAt(input.cron, timezone, new Date());
 
     this.db
       .prepare(
@@ -87,7 +90,7 @@ export class CronStore {
         input.sessionTarget,
         input.cron,
         input.prompt,
-        input.timezone ?? null,
+        timezone,
         input.runOnce ? 1 : 0,
         nextRunAt,
         now,
@@ -112,7 +115,7 @@ export class CronStore {
       return null;
     }
 
-    const nextRunAt = enabled ? computeNextRunAt(existing.cron, existing.timezone, new Date()) : existing.nextRunAt;
+    const nextRunAt = enabled ? computeNextRunAt(existing.cron, normalizeCronTimezone(existing.timezone), new Date()) : existing.nextRunAt;
     this.db
       .prepare(
         `UPDATE cron_jobs
@@ -144,7 +147,7 @@ export class CronStore {
       return null;
     }
 
-    const nextRunAt = computeNextRunAt(existing.cron, existing.timezone, completedAt);
+    const nextRunAt = computeNextRunAt(existing.cron, normalizeCronTimezone(existing.timezone), completedAt);
     this.db
       .prepare(
         `UPDATE cron_jobs
@@ -176,7 +179,7 @@ function mapCronRow(row: Record<string, unknown>): CronJob {
     sessionTarget: String(row.session_target),
     cron: String(row.cron),
     prompt: String(row.prompt),
-    timezone: row.timezone ? String(row.timezone) : null,
+    timezone: normalizeCronTimezone(row.timezone ? String(row.timezone) : null),
     runOnce: Number(row.run_once) === 1,
     nextRunAt: String(row.next_run_at),
     lastRunAt: row.last_run_at ? String(row.last_run_at) : null,
@@ -187,10 +190,16 @@ function mapCronRow(row: Record<string, unknown>): CronJob {
   };
 }
 
+function normalizeCronTimezone(timezone: string | null | undefined): string {
+  const value = (timezone ?? "").trim();
+  return value || DEFAULT_CRON_TIMEZONE;
+}
+
 export function computeNextRunAt(cronExpr: string, timezone: string | null, from: Date): string {
+  const tz = normalizeCronTimezone(timezone);
   const expr = CronExpressionParser.parse(cronExpr, {
     currentDate: from,
-    ...(timezone ? { tz: timezone } : {})
+    tz
   });
   return expr.next().toDate().toISOString();
 }
