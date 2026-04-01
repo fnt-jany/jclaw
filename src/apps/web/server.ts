@@ -529,6 +529,27 @@ async function readCodexLatestVersion(): Promise<string | null> {
   return readLatestNpmPackageVersion("@openai/codex");
 }
 
+function isGlobalNpmPermissionError(output: string): boolean {
+  return /EACCES|EPERM|permission denied|access is denied/i.test(output);
+}
+
+async function runGlobalNpmInstall(packageSpec: string): Promise<CommandRunResult> {
+  const primary = await runCommandCapture(NPM_COMMAND, ["install", "-g", packageSpec], { timeoutMs: 10 * 60 * 1000 });
+  const primaryOutput = `${primary.stdout}
+${primary.stderr}`;
+  if (primary.exitCode === 0 || process.platform === "win32" || !isGlobalNpmPermissionError(primaryOutput)) {
+    return primary;
+  }
+
+  const sudoAttempt = await runCommandCapture("sudo", ["-n", NPM_COMMAND, "install", "-g", packageSpec], { timeoutMs: 10 * 60 * 1000 });
+  if (sudoAttempt.exitCode !== 0) {
+    const combined = `${sudoAttempt.stdout}
+${sudoAttempt.stderr}`.trim();
+    throw new Error(combined || (primary.stderr || primary.stdout || `npm install failed with exit ${primary.exitCode}`).trim());
+  }
+  return sudoAttempt;
+}
+
 async function readClaudeCurrentVersion(): Promise<string | null> {
   const result = await runCommandCapture(claudeRunnerResolved.command, ["--version"], { timeoutMs: 20000 });
   if (result.exitCode !== 0) {
@@ -658,7 +679,7 @@ function startClaudeUpdate(latestVersion: string): void {
   void (async () => {
     try {
       pushClaudeUpdateLog("info", `Updating Claude to ${latestVersion}`);
-      const installResult = await runCommandCapture(NPM_COMMAND, ["install", "-g", `${CLAUDE_NPM_PACKAGE}@${latestVersion}`], { timeoutMs: 10 * 60 * 1000 });
+      const installResult = await runGlobalNpmInstall(`${CLAUDE_NPM_PACKAGE}@${latestVersion}`);
       if (installResult.exitCode !== 0) {
         throw new Error((installResult.stderr || installResult.stdout || "claude update failed").trim());
       }
@@ -768,7 +789,7 @@ function startCodexUpdate(latestVersion: string): void {
       }
       pushCodexUpdateLog("info", `Updating Codex to ${latestVersion}`);
       await assertCodexUpdateSafe();
-      const installResult = await runCommandCapture(NPM_COMMAND, ["install", "-g", `@openai/codex@${latestVersion}`], { timeoutMs: 10 * 60 * 1000 });
+      const installResult = await runGlobalNpmInstall(`@openai/codex@${latestVersion}`);
       if (installResult.exitCode !== 0) {
         throw new Error((installResult.stderr || installResult.stdout || "codex update failed").trim());
       }
