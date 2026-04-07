@@ -420,30 +420,51 @@
       min-height: 0;
     }
 
+    .bubble-wrap {
+      display: flex;
+      align-items: flex-end;
+      gap: 8px;
+      width: 100%;
+      justify-content: flex-start;
+    }
+
+    .bubble-wrap.user {
+      justify-content: flex-end;
+    }
+
     .bubble {
       max-width: min(78ch, 90%);
       border: 1px solid var(--line);
       border-radius: 12px;
       padding: 10px 12px;
-      white-space: pre-wrap;
-      overflow-wrap: anywhere;
-      word-break: break-word;
       line-height: 1.45;
       font-size: 14px;
     }
 
-    .user {
-      margin-left: auto;
+    .bubble-body {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .bubble-meta {
+      font-size: 11px;
+      line-height: 1;
+      color: var(--muted);
+      padding: 0 2px 2px;
+      flex: 0 0 auto;
+      white-space: nowrap;
+    }
+
+    .bubble.user {
       background: var(--user);
     }
 
-    .bot {
-      margin-right: auto;
+    .bubble.bot {
       background: var(--bot);
     }
 
-    .err {
-      margin-right: auto;
+    .bubble.err {
       background: var(--warn);
     }
 
@@ -1275,10 +1296,27 @@
       const shouldStickToBottom = !autoScrollLocked;
       logEl.innerHTML = '';
       for (const row of rows) {
+        const wrap = document.createElement('div');
+        wrap.className = `bubble-wrap ${row.type}`;
         const div = document.createElement('div');
         div.className = `bubble ${row.type}`;
-        div.textContent = row.text;
-        logEl.appendChild(div);
+        const body = document.createElement('div');
+        body.className = 'bubble-body';
+        body.textContent = row.text;
+        div.appendChild(body);
+        const meta = row.timestamp ? document.createElement('div') : null;
+        if (meta) {
+          meta.className = 'bubble-meta';
+          meta.textContent = getBubbleMetaText(row);
+        }
+        if (row.type === 'user') {
+          if (meta) wrap.appendChild(meta);
+          wrap.appendChild(div);
+        } else {
+          wrap.appendChild(div);
+          if (meta) wrap.appendChild(meta);
+        }
+        logEl.appendChild(wrap);
       }
       if (shouldStickToBottom) {
         scrollLogToBottom();
@@ -1313,7 +1351,7 @@
     }
 
     function appendBubble(text, type = 'bot', slot = currentSlot) {
-      const row = { text, type, slot, _unseenMarked: false };
+      const row = { text, type, slot, timestamp: new Date().toISOString(), _unseenMarked: false };
       getSessionLog(slot).push(row);
       if (slot === currentSlot) {
         if (autoScrollLocked) {
@@ -1887,12 +1925,12 @@
     function formatHistoryRows(rows, slot) {
       const out = [];
       for (const row of rows) {
-        out.push({ text: row.input, type: 'user', slot });
+        out.push({ text: row.input, type: 'user', slot, timestamp: row.timestamp });
         const merged = [row.output?.trim() || '', row.error ? `ERR:
 ${row.error}` : '']
           .filter(Boolean)
           .join('\n\n') || '(no output)';
-        out.push({ text: merged, type: row.error ? 'err' : 'bot', slot });
+        out.push({ text: merged, type: row.error ? 'err' : 'bot', slot, timestamp: row.timestamp });
       }
       return out;
     }
@@ -2156,7 +2194,11 @@ ${row.error}` : '']
     }
 
 
-    function getKstDateString(date = new Date()) {
+    function getKstDateString(dateLike = new Date()) {
+      const date = dateLike instanceof Date ? dateLike : new Date(dateLike);
+      if (!Number.isFinite(date.getTime())) {
+        return '';
+      }
       const formatter = new Intl.DateTimeFormat('en-CA', {
         timeZone: 'Asia/Seoul',
         year: 'numeric',
@@ -2164,6 +2206,29 @@ ${row.error}` : '']
         day: '2-digit'
       });
       return formatter.format(date);
+    }
+
+    function getKstTimeString(isoText) {
+      const date = new Date(isoText);
+      if (!Number.isFinite(date.getTime())) {
+        return '';
+      }
+      const kstDate = getKstDateString(date);
+      const todayKst = getKstDateString(new Date());
+      const timeText = new Intl.DateTimeFormat('sv-SE', {
+        timeZone: 'Asia/Seoul',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false
+      }).format(date);
+      return kstDate && todayKst && kstDate !== todayKst ? `${kstDate} ${timeText}` : timeText;
+    }
+
+    function getBubbleMetaText(row) {
+      if (!row || !row.timestamp) {
+        return '';
+      }
+      return getKstTimeString(row.timestamp);
     }
 
     function getKstDateTimeString(isoText) {
