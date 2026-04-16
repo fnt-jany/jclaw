@@ -313,10 +313,6 @@ function buildArgs(input: RunLlmProcessInput, prompt: string): { args: string[];
   };
 
   const finalizeCodexArgs = (args: string[]): { args: string[]; stdinPrompt: string | null } => {
-    if (!prompt.includes("\n")) {
-      return { args: applyModelOverride(args), stdinPrompt: null };
-    }
-
     const targetIndex = args.lastIndexOf(prompt);
     if (targetIndex < 0) {
       return { args: applyModelOverride(args), stdinPrompt: null };

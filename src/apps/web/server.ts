@@ -53,6 +53,15 @@ type ChatAttachment = {
   fileName?: string;
   mimeType?: string;
   contentBase64?: string;
+  uploadId?: string;
+};
+
+type PendingWebUpload = {
+  id: string;
+  localPath: string;
+  fileName: string;
+  mimeType: string;
+  createdAt: string;
 };
 
 type ChatRequest = {
@@ -112,6 +121,7 @@ const WEB_ALLOWED_EMAILS = new Set(
 const webAuthSessions = new Map<string, WebAuthSession>();
 const chatJobSubscribers = new Map<string, Set<ServerResponse>>();
 const sessionEventSubscribers = new Map<string, Set<ServerResponse>>();
+const pendingWebUploads = new Map<string, PendingWebUpload>();
 const CHAT_JOB_MAX = Math.max(200, Number(process.env.WEB_CHAT_JOB_MAX ?? "2000") || 2000);
 const CHAT_JOB_WORKERS = Math.max(1, Number(process.env.WEB_CHAT_JOB_WORKERS ?? "1") || 1);
 const CHAT_SSE_HEARTBEAT_MS = Math.max(10000, Number(process.env.WEB_CHAT_SSE_HEARTBEAT_MS ?? "15000") || 15000);
@@ -1124,6 +1134,52 @@ async function pruneWebUploads(maxFiles: number): Promise<void> {
   }
 }
 
+
+function createPendingUploadId(): string {
+  return `wu_${randomBytes(6).toString('hex')}`;
+}
+
+function registerPendingWebUpload(localPath: string, attachment: ChatAttachment): PendingWebUpload {
+  const upload: PendingWebUpload = {
+    id: createPendingUploadId(),
+    localPath,
+    fileName: String(attachment.fileName ?? path.basename(localPath)).trim() || path.basename(localPath),
+    mimeType: String(attachment.mimeType ?? '').trim() || 'application/octet-stream',
+    createdAt: new Date().toISOString()
+  };
+  pendingWebUploads.set(upload.id, upload);
+  return upload;
+}
+
+function resolvePendingWebUploads(uploadIds: string[]): PendingWebUpload[] {
+  const resolved: PendingWebUpload[] = [];
+  for (const uploadId of uploadIds) {
+    const upload = pendingWebUploads.get(uploadId);
+    if (!upload) {
+      throw new Error(`upload not found: ${uploadId}`);
+    }
+    resolved.push(upload);
+  }
+  return resolved;
+}
+
+async function deletePendingWebUpload(uploadId: string): Promise<void> {
+  const upload = pendingWebUploads.get(uploadId);
+  if (!upload) {
+    return;
+  }
+  pendingWebUploads.delete(uploadId);
+  await unlink(upload.localPath).catch(() => {
+    // ignore stale file errors
+  });
+}
+
+function clearPendingWebUploads(uploadIds: string[]): void {
+  for (const uploadId of uploadIds) {
+    pendingWebUploads.delete(uploadId);
+  }
+}
+
 async function saveWebAttachment(attachment: ChatAttachment): Promise<string> {
   const contentBase64 = (attachment.contentBase64 ?? "").trim();
   if (!contentBase64) {
@@ -1164,6 +1220,59 @@ function formatResult(output: string, error: string | null, maxChars: number): s
   }
 
   return `${merged.slice(0, maxChars)}\n\n[truncated ${merged.length - maxChars} chars]`;
+}
+
+async function handleApiUpload(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = requireAuth(req, res);
+  if (!auth) {
+    return;
+  }
+
+  let payload: ChatAttachment;
+  try {
+    payload = JSON.parse(await readBody(req)) as ChatAttachment;
+  } catch (err) {
+    json(res, 400, { error: String(err) });
+    return;
+  }
+
+  try {
+    const localPath = await saveWebAttachment(payload);
+    const upload = registerPendingWebUpload(localPath, payload);
+    const sizeBytes = (await stat(localPath)).size;
+    json(res, 200, {
+      uploadId: upload.id,
+      fileName: upload.fileName,
+      mimeType: upload.mimeType,
+      sizeBytes
+    });
+  } catch (err) {
+    json(res, 400, { error: String(err) });
+  }
+}
+
+async function handleApiUploadDelete(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = requireAuth(req, res);
+  if (!auth) {
+    return;
+  }
+
+  let payload: { uploadId?: string };
+  try {
+    payload = JSON.parse(await readBody(req)) as { uploadId?: string };
+  } catch (err) {
+    json(res, 400, { error: String(err) });
+    return;
+  }
+
+  const uploadId = String(payload.uploadId ?? '').trim();
+  if (!uploadId) {
+    json(res, 400, { error: 'uploadId is required' });
+    return;
+  }
+
+  await deletePendingWebUpload(uploadId);
+  json(res, 200, { ok: true });
 }
 
 async function readBody(req: IncomingMessage): Promise<string> {
@@ -1972,13 +2081,20 @@ async function handleApiChat(req: IncomingMessage, res: ServerResponse): Promise
   }
 
   const message = (payload.message ?? "").trim();
-  const attachments = [
+  const directAttachments = [
     ...(Array.isArray(payload.attachments) ? payload.attachments : []),
     ...(payload.attachment?.contentBase64 ? [payload.attachment] : [])
   ].filter((attachment) => Boolean(attachment?.contentBase64));
-  const hasAttachment = attachments.length > 0;
+  const uploadedIds = [
+    ...(Array.isArray(payload.attachments) ? payload.attachments : []),
+    ...(payload.attachment?.uploadId ? [payload.attachment] : [])
+  ]
+    .map((attachment) => String(attachment?.uploadId ?? '').trim())
+    .filter(Boolean);
+  const attachmentCount = directAttachments.length + uploadedIds.length;
+  const hasAttachment = attachmentCount > 0;
 
-  if (attachments.length > WEB_UPLOAD_MAX_FILES) {
+  if (attachmentCount > WEB_UPLOAD_MAX_FILES) {
     json(res, 400, { error: `too many attachments (max ${WEB_UPLOAD_MAX_FILES})` });
     return;
   }
@@ -2004,8 +2120,15 @@ async function handleApiChat(req: IncomingMessage, res: ServerResponse): Promise
     let effectivePrompt = message;
     if (hasAttachment) {
       const localPaths: string[] = [];
-      for (const attachment of attachments) {
+      for (const attachment of directAttachments) {
         localPaths.push(await saveWebAttachment(attachment));
+      }
+      if (uploadedIds.length) {
+        const uploaded = resolvePendingWebUploads(uploadedIds);
+        for (const upload of uploaded) {
+          localPaths.push(upload.localPath);
+        }
+        clearPendingWebUploads(uploadedIds);
       }
       const fileLabel = localPaths.length === 1 ? "file" : "files";
       effectivePrompt = [
@@ -2934,6 +3057,16 @@ export async function startWebServer(): Promise<void> {
 
     if (req.method === "GET" && pathname === "/api/session-history") {
       await handleApiSessionHistory(req, res);
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/upload") {
+      await handleApiUpload(req, res);
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/api/upload/delete") {
+      await handleApiUploadDelete(req, res);
       return;
     }
 

@@ -1020,6 +1020,14 @@
       <textarea id="message" rows="1" autocomplete="off" placeholder="Type message or /command"></textarea>
       <button type="submit">Send</button>
     </form>
+
+    <div id="uploadOverlay" class="upload-overlay hidden" aria-live="polite">
+      <div class="upload-overlay-card">
+        <div class="upload-overlay-title">Uploading attachments...</div>
+        <div class="upload-progress-track"><div id="uploadProgressBar" class="upload-progress-bar"></div></div>
+        <div id="uploadOverlayText" class="upload-overlay-text">Preparing attachments...</div>
+      </div>
+    </div>
   </main>
 
   <script src="https://accounts.google.com/gsi/client" async defer></script>
@@ -1067,6 +1075,10 @@
     const attachmentListEl = document.getElementById('attachmentList');
     const messageEl = document.getElementById('message');
     const composerEl = document.getElementById('composer');
+    const sendBtnEl = composerEl.querySelector('button[type="submit"]');
+    const uploadOverlayEl = document.getElementById('uploadOverlay');
+    const uploadProgressBarEl = document.getElementById('uploadProgressBar');
+    const uploadOverlayTextEl = document.getElementById('uploadOverlayText');
 
     const SLOT_TABS = Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i));
     const SLOT_PAGE_SIZE = 8;
@@ -1141,6 +1153,7 @@
     const syncingPendingSlots = new Set();
     let autoScrollLocked = false;
     let unseenMessageCount = 0;
+    let uploadBusy = false;
 
 
     function refreshViewportBaseline() {
@@ -1329,24 +1342,61 @@
     function renderPendingAttachments() {
       attachmentListEl.innerHTML = '';
       attachmentListEl.classList.toggle('hidden', pendingAttachments.length === 0);
-      for (const file of pendingAttachments) {
+      for (const item of pendingAttachments) {
         const chip = document.createElement('div');
         chip.className = 'attachment-chip';
+
         const name = document.createElement('span');
         name.className = 'attachment-chip-name';
-        name.textContent = file.name;
+        name.textContent = item.fileName;
+
+        const status = document.createElement('span');
+        status.className = 'attachment-chip-status';
+        if (item.status === 'uploading') {
+          status.textContent = `${item.progress}%`;
+        } else if (item.status === 'ready') {
+          status.textContent = 'ready';
+        } else if (item.status === 'error') {
+          status.textContent = 'failed';
+        } else {
+          status.textContent = item.status;
+        }
+
         const removeBtn = document.createElement('button');
         removeBtn.type = 'button';
         removeBtn.className = 'attachment-chip-remove';
         removeBtn.textContent = 'x';
         removeBtn.title = 'Remove';
         removeBtn.addEventListener('click', () => {
-          pendingAttachments = pendingAttachments.filter((item) => item !== file);
-          renderPendingAttachments();
+          void removePendingAttachment(item);
         });
+
         chip.appendChild(name);
+        chip.appendChild(status);
         chip.appendChild(removeBtn);
         attachmentListEl.appendChild(chip);
+      }
+    }
+
+    async function removePendingAttachment(item) {
+      item.removed = true;
+      if (item.reader) {
+        item.reader.abort();
+      }
+      if (item.xhr) {
+        item.xhr.abort();
+      }
+      pendingAttachments = pendingAttachments.filter((entry) => entry !== item);
+      renderPendingAttachments();
+      if (item.uploadId) {
+        try {
+          await api('/api/upload/delete', {
+            method: 'POST',
+            body: JSON.stringify({ uploadId: item.uploadId })
+          });
+        } catch {
+          // ignore cleanup failures for removed uploads
+        }
       }
     }
 
@@ -2095,6 +2145,153 @@ ${row.error}` : '']
       return data;
     }
 
+    function setUploadBusy(active, text = '', percent = null) {
+      uploadBusy = active;
+      uploadOverlayEl.classList.toggle('hidden', !active);
+      filePickerBtnEl.disabled = active;
+      fileInputEl.disabled = active;
+      messageEl.disabled = active;
+      sendBtnEl.disabled = active;
+      slotPrevEl.disabled = active;
+      slotNextEl.disabled = active;
+      sessionTabsEl.querySelectorAll('button').forEach((btn) => {
+        btn.disabled = active;
+      });
+      if (text) {
+        uploadOverlayTextEl.textContent = text;
+      } else if (!active) {
+        uploadOverlayTextEl.textContent = 'Preparing attachments...';
+      }
+      const safePercent = typeof percent === 'number' && Number.isFinite(percent)
+        ? Math.max(0, Math.min(100, percent))
+        : 0;
+      uploadProgressBarEl.style.width = `${safePercent}%`;
+    }
+
+    function postJsonWithUploadProgress(path, payload, onProgress) {
+      return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        const method = 'POST';
+        xhr.open(method, apiUrl(path), true);
+        xhr.withCredentials = true;
+        xhr.setRequestHeader('Content-Type', 'application/json');
+        xhr.upload.onprogress = (event) => {
+          if (!event.lengthComputable || typeof onProgress !== 'function') {
+            return;
+          }
+          onProgress(event.loaded, event.total);
+        };
+        xhr.onerror = () => reject(new Error(`request failed (${method} ${path})`));
+        xhr.onload = () => {
+          const rawText = xhr.responseText || '';
+          let data = {};
+          try {
+            data = rawText ? JSON.parse(rawText) : {};
+          } catch {
+            data = {};
+          }
+          if (xhr.status < 200 || xhr.status >= 300) {
+            const detail = typeof data.error === 'string' && data.error.trim()
+              ? data.error.trim()
+              : rawText.trim().replace(/\s+/g, ' ').slice(0, 220) || 'request failed';
+            reject(new Error(`${detail} (${method} ${path}, status=${xhr.status})`));
+            return;
+          }
+          resolve(data);
+        };
+        xhr.send(JSON.stringify(payload));
+      });
+    }
+
+    function uploadAttachmentSelection(item, file) {
+      const reader = new FileReader();
+      item.reader = reader;
+      item.status = 'uploading';
+      item.progress = 0;
+      renderPendingAttachments();
+      reader.onerror = () => {
+        if (item.removed) {
+          return;
+        }
+        item.reader = null;
+        item.status = 'error';
+        item.error = 'Failed to read file.';
+        renderPendingAttachments();
+      };
+      reader.onabort = () => {
+        item.reader = null;
+      };
+      reader.onload = () => {
+        item.reader = null;
+        if (item.removed) {
+          return;
+        }
+        const result = String(reader.result || '');
+        const marker = 'base64,';
+        const index = result.indexOf(marker);
+        if (index < 0) {
+          item.status = 'error';
+          item.error = 'Failed to encode file.';
+          renderPendingAttachments();
+          return;
+        }
+        const xhr = new XMLHttpRequest();
+        item.xhr = xhr;
+        xhr.open('POST', apiUrl('/api/upload'), true);
+        xhr.withCredentials = true;
+        xhr.setRequestHeader('Content-Type', 'application/json');
+        xhr.upload.onprogress = (event) => {
+          if (item.removed || !event.lengthComputable) {
+            return;
+          }
+          item.progress = Math.max(0, Math.min(100, Math.round((event.loaded / event.total) * 100)));
+          renderPendingAttachments();
+        };
+        xhr.onerror = () => {
+          item.xhr = null;
+          if (item.removed) {
+            return;
+          }
+          item.status = 'error';
+          item.error = 'Upload failed.';
+          renderPendingAttachments();
+        };
+        xhr.onabort = () => {
+          item.xhr = null;
+        };
+        xhr.onload = () => {
+          item.xhr = null;
+          if (item.removed) {
+            return;
+          }
+          const rawText = xhr.responseText || '';
+          let data = {};
+          try {
+            data = rawText ? JSON.parse(rawText) : {};
+          } catch {
+            data = {};
+          }
+          if (xhr.status < 200 || xhr.status >= 300) {
+            item.status = 'error';
+            item.error = String(data.error || 'Upload failed.');
+            renderPendingAttachments();
+            return;
+          }
+          item.status = 'ready';
+          item.progress = 100;
+          item.uploadId = String(data.uploadId || '');
+          item.error = '';
+          renderPendingAttachments();
+        };
+        xhr.send(JSON.stringify({
+          fileName: file.name,
+          mimeType: file.type || 'application/octet-stream',
+          contentBase64: result.slice(index + marker.length)
+        }));
+      };
+      reader.readAsDataURL(file);
+    }
+
     function renderSessionTabs(alignToCurrent = false) {
       const currentIndex = SLOT_TABS.indexOf(currentSlot);
       if (alignToCurrent && currentIndex >= 0) {
@@ -2685,10 +2882,24 @@ ${row.error}` : '']
         return;
       }
       for (const file of files) {
-        pendingAttachments.push(file);
-      }
-      if (pendingAttachments.length > 50) {
-        pendingAttachments = pendingAttachments.slice(0, 50);
+        if (pendingAttachments.length >= 50) {
+          break;
+        }
+        const item = {
+          key: `${Date.now()}_${Math.random().toString(16).slice(2)}`,
+          fileName: file.name,
+          mimeType: file.type || 'application/octet-stream',
+          status: 'uploading',
+          progress: 0,
+          uploadId: '',
+          error: '',
+          removed: false,
+          reader: null,
+          xhr: null
+        };
+        pendingAttachments.push(item);
+        renderPendingAttachments();
+        uploadAttachmentSelection(item, file);
       }
       fileInputEl.value = '';
       renderPendingAttachments();
@@ -2865,11 +3076,22 @@ ${row.error}` : '']
 
     composerEl.addEventListener('submit', async (e) => {
       e.preventDefault();
+      if (uploadBusy) {
+        return;
+      }
       const wasAtBottom = isLogNearBottom();
       const rawText = messageEl.value;
       const text = rawText.trim();
       const files = [...pendingAttachments];
       if (!text && files.length === 0) return;
+      if (files.some((file) => file.status === 'uploading')) {
+        appendBubble('Wait for file uploads to finish before sending.', 'err', currentSlot);
+        return;
+      }
+      if (files.some((file) => file.status === 'error')) {
+        appendBubble('Remove failed attachments before sending.', 'err', currentSlot);
+        return;
+      }
 
       const state = getInputState();
       if (text) {
@@ -2882,7 +3104,7 @@ ${row.error}` : '']
       state.historyDraft = '';
 
       const slotAtSend = currentSlot;
-      const filePreview = files.map((file) => `[file] ${file.name}`).join('\n');
+      const filePreview = files.map((file) => `[file] ${file.fileName}`).join('\n');
       const userPreview = [text, filePreview].filter(Boolean).join('\n\n');
       appendBubble(userPreview, 'user', slotAtSend);
       messageEl.value = '';
@@ -2891,47 +3113,55 @@ ${row.error}` : '']
       fileInputEl.value = '';
       renderPendingAttachments();
       resizeMessageInput();
-      const pending = appendBubble('processing...', 'bot', slotAtSend);
+      const pending = appendBubble(files.length ? 'preparing attachments...' : 'processing...', 'bot', slotAtSend);
       if (wasAtBottom) {
         resetAutoScrollState(false);
         requestAnimationFrame(scrollLogToBottom);
       }
       let dots = 0;
-      const ticker = setInterval(() => {
-        dots = (dots + 1) % 4;
-        updateBubble(pending, { text: `processing${'.'.repeat(dots)}` });
-      }, 1200);
+      let ticker = null;
 
       try {
         const payload = { message: text, slot: slotAtSend };
         if (files.length) {
-          payload.attachments = [];
-          for (const file of files) {
-            const contentBase64 = await readFileAsBase64(file);
-            payload.attachments.push({
-              fileName: file.name,
-              mimeType: file.type || 'application/octet-stream',
-              contentBase64
-            });
+          payload.attachments = files.map((file) => ({ uploadId: file.uploadId }));
+          const data = await api('/api/chat', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+          });
+          if (data.queued && data.jobId) {
+            pendingBubbleByJob.set(data.jobId, pending);
+            await watchChatJob(data.jobId, slotAtSend, pending);
+          } else {
+            applyState(data, { adoptCurrent: currentSlot === slotAtSend });
+            updateBubble(pending, { text: data.reply, type: 'bot' });
           }
-        }
-
-        const data = await api('/api/chat', {
-          method: 'POST',
-          body: JSON.stringify(payload)
-        });
-
-        if (data.queued && data.jobId) {
-          pendingBubbleByJob.set(data.jobId, pending);
-          await watchChatJob(data.jobId, slotAtSend, pending);
         } else {
-          applyState(data, { adoptCurrent: currentSlot === slotAtSend });
-          updateBubble(pending, { text: data.reply, type: 'bot' });
+          ticker = setInterval(() => {
+            dots = (dots + 1) % 4;
+            updateBubble(pending, { text: `processing${'.'.repeat(dots)}` });
+          }, 1200);
+
+          const data = await api('/api/chat', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+          });
+
+          if (data.queued && data.jobId) {
+            pendingBubbleByJob.set(data.jobId, pending);
+            await watchChatJob(data.jobId, slotAtSend, pending);
+          } else {
+            applyState(data, { adoptCurrent: currentSlot === slotAtSend });
+            updateBubble(pending, { text: data.reply, type: 'bot' });
+          }
         }
       } catch (err) {
         updateBubble(pending, { text: String(err), type: 'err' });
       } finally {
-        clearInterval(ticker);
+        if (ticker) {
+          clearInterval(ticker);
+        }
+        setUploadBusy(false);
       }
     });
 
