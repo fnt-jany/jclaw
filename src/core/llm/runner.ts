@@ -101,6 +101,24 @@ function extractCodexSessionId(stdout: string, stderr: string): string | null {
   return match?.[1] ?? null;
 }
 
+function extractCodexAssistantText(stderr: string): string | null {
+  const trimmed = stderr.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const marker = "\ncodex\n";
+  const lastCodexIndex = trimmed.lastIndexOf(marker);
+  if (lastCodexIndex < 0) {
+    return null;
+  }
+
+  const afterCodex = trimmed.slice(lastCodexIndex + marker.length);
+  const tokensUsedIndex = afterCodex.search(/\ntokens used\b/i);
+  const body = (tokensUsedIndex >= 0 ? afterCodex.slice(0, tokensUsedIndex) : afterCodex).trim();
+  return body || null;
+}
+
 function parseGeminiSessions(listOutput: string): GeminiSessionRow[] {
   const rows: GeminiSessionRow[] = [];
   const lines = listOutput.split(/\r?\n/);
@@ -362,6 +380,10 @@ export async function runLlmProcess(input: RunLlmProcessInput): Promise<RunLlmPr
     let child: ReturnType<typeof spawn>;
     let stdout = "";
     let stderr = "";
+    const getResolvedOutput = (): string =>
+      provider === "codex" && !stdout.trim()
+        ? extractCodexAssistantText(stderr) ?? stdout
+        : stdout;
     let settled = false;
     let lastActivityAt: number | null = null;
     let lastActivityStream: "stdout" | "stderr" | null = null;
@@ -439,7 +461,7 @@ export async function runLlmProcess(input: RunLlmProcessInput): Promise<RunLlmPr
         child.kill();
 
         resolve({
-          output: stdout,
+          output: getResolvedOutput(),
           error: null,
           exitCode: 0,
           durationMs: Date.now() - started,
@@ -465,7 +487,7 @@ export async function runLlmProcess(input: RunLlmProcessInput): Promise<RunLlmPr
         const lastActivityPreview = normalizeChunkForLog(lastActivityChunk);
         const proc = await captureProcessSnapshot(child.pid);
         resolve({
-          output: stdout,
+          output: getResolvedOutput(),
           error:
             `Inactivity timed out after ${inactivityTimeoutMs}ms` +
             `\nlast_activity_stream=${lastActivityStream ?? "none"}` +
@@ -498,7 +520,7 @@ export async function runLlmProcess(input: RunLlmProcessInput): Promise<RunLlmPr
           const lastActivityPreview = normalizeChunkForLog(lastActivityChunk);
           const proc = await captureProcessSnapshot(child.pid);
           resolve({
-            output: stdout,
+            output: getResolvedOutput(),
             error:
               `Timed out after ${input.timeoutMs}ms` +
               `\nlast_activity_stream=${lastActivityStream ?? "none"}` +
@@ -549,7 +571,7 @@ export async function runLlmProcess(input: RunLlmProcessInput): Promise<RunLlmPr
         }
         clearInterval(inactivityTimer);
         resolve({
-          output: stdout,
+          output: getResolvedOutput(),
           error: `Failed to execute command: ${err.message}`,
           exitCode: null,
           durationMs: Date.now() - started,
@@ -585,7 +607,7 @@ export async function runLlmProcess(input: RunLlmProcessInput): Promise<RunLlmPr
           }
 
           resolve({
-            output: stdout,
+            output: getResolvedOutput(),
             error: errorText,
             exitCode: code,
             durationMs: Date.now() - started,

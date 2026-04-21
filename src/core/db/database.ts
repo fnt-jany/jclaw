@@ -111,6 +111,20 @@ function ensureSessionPreferencesModelOverride(db: Database.Database): void {
   `);
 }
 
+function ensureSessionPreferencesWorkdirOverride(db: Database.Database): void {
+  const columns = db
+    .prepare("PRAGMA table_info(session_preferences)")
+    .all() as Array<{ name: string }>;
+  const hasWorkdirOverride = columns.some((col) => col.name === "workdir_override");
+  if (hasWorkdirOverride) {
+    return;
+  }
+
+  db.exec(`
+    ALTER TABLE session_preferences ADD COLUMN workdir_override TEXT NOT NULL DEFAULT '';
+  `);
+}
+
 function ensureSessionsLlmColumns(db: Database.Database): void {
   const columns = db
     .prepare("PRAGMA table_info(sessions)")
@@ -191,7 +205,8 @@ function ensureSchema(db: Database.Database): void {
     CREATE TABLE IF NOT EXISTS session_preferences (
       session_id TEXT PRIMARY KEY,
       plan_mode INTEGER NOT NULL DEFAULT 0,
-      reasoning_effort TEXT NOT NULL DEFAULT 'none'
+      reasoning_effort TEXT NOT NULL DEFAULT 'none',
+      workdir_override TEXT NOT NULL DEFAULT ''
     );
 
     CREATE TABLE IF NOT EXISTS interaction_settings (
@@ -263,6 +278,7 @@ function ensureSchema(db: Database.Database): void {
   ensureSessionPreferencesTable(db);
   ensureSessionPreferencesNickname(db);
   ensureSessionPreferencesModelOverride(db);
+  ensureSessionPreferencesWorkdirOverride(db);
   ensureSessionsLlmColumns(db);
 }
 

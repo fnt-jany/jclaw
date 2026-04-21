@@ -6,6 +6,7 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { loadConfig } from "../../core/config/env";
 import { SessionStore, Session } from "../../core/session/sessionStore";
+import { assertDirectoryExists, formatDirectoryListing, getEffectiveSessionWorkdir, resolveSessionCdTarget } from "../../core/session/workdir";
 import { cancelSessionRuns, runLlm } from "../../core/llm/execute";
 import { resolveRunnerForSession } from "../../core/llm/router";
 import { formatAllModelCatalogs, formatModelCatalog, hasModelCatalog } from "../../core/llm/modelCatalog";
@@ -1093,6 +1094,19 @@ function normalizeCommand(line: string): string {
   if (line.startsWith(":")) {
     return `/${line.slice(1)}`;
   }
+  const trimmed = line.trim();
+  if (/^pwd$/i.test(trimmed)) {
+    return "/pwd";
+  }
+  if (/^ls$/i.test(trimmed)) {
+    return "/ls";
+  }
+  if (/^cd\.\.$/i.test(trimmed)) {
+    return "/cd ..";
+  }
+  if (/^cd\s+/i.test(trimmed)) {
+    return `/${trimmed}`;
+  }
   return line;
 }
 
@@ -1588,7 +1602,7 @@ async function runPrompt(chatId: string, session: Session, prompt: string): Prom
       sessionId: session.id,
       threadId: session.threadId,
       timeoutMs: config.codexTimeoutMs,
-      workdir: config.codexWorkdir,
+      workdir: getEffectiveSessionWorkdir(store, session.id, config.codexWorkdir),
       codexNodeOptions: config.codexNodeOptions,
       reasoningEffort: store.getReasoningEffort(session.id),
       provider: runner.provider,
@@ -1652,7 +1666,11 @@ async function handleCommand(chatId: string, session: Session, cmdLine: string):
         LOG_COMMAND,
         "/plan <on|off|status>",
         "/cancel",
+        "/pwd",
+        "/ls",
+        "/cd <path|..>",
         "/reason <none|low|medium|high|status>",
+        "/workdir <path|status|clear>",
         "/model <name|status|clear>",
         "/models [current|all|codex|gemini|claude]",
         "/nick <name|status|clear>",
@@ -1847,6 +1865,106 @@ async function handleCommand(chatId: string, session: Session, cmdLine: string):
       reply: "Usage: /reason <none|low|medium|high|status>",
       sessionSlot: session.shortId,
       sessionName: session.id,
+      logEnabled: interactionLogger.isEnabled()
+    };
+  }
+
+  if (cmd === "/pwd") {
+    return {
+      reply: `Workdir: ${getEffectiveSessionWorkdir(store, session.id, config.codexWorkdir)}`,
+      sessionSlot: session.shortId,
+      sessionName: session.id,
+      logEnabled: interactionLogger.isEnabled()
+    };
+  }
+
+  if (cmd === "/ls") {
+    try {
+      const target = getEffectiveSessionWorkdir(store, session.id, config.codexWorkdir);
+      return {
+        reply: [target, "", await formatDirectoryListing(target)].join("\n"),
+        sessionSlot: session.shortId,
+        sessionName: session.id,
+        sessionNick: getSessionNick(session),
+        logEnabled: interactionLogger.isEnabled()
+      };
+    } catch (err) {
+      return {
+        reply: err instanceof Error ? err.message : String(err),
+        sessionSlot: session.shortId,
+        sessionName: session.id,
+        sessionNick: getSessionNick(session),
+        logEnabled: interactionLogger.isEnabled()
+      };
+    }
+  }
+
+  if (cmd === "/cd") {
+    const value = parts.slice(1).join(" ").trim();
+    if (!value) {
+      return {
+        reply: "Usage: /cd <path|..>",
+        sessionSlot: session.shortId,
+        sessionName: session.id,
+        sessionNick: getSessionNick(session),
+        logEnabled: interactionLogger.isEnabled()
+      };
+    }
+
+    try {
+      const current = getEffectiveSessionWorkdir(store, session.id, config.codexWorkdir);
+      const next = await resolveSessionCdTarget(current, value);
+      await assertDirectoryExists(next);
+      store.setSessionWorkdirOverride(session.id, next);
+      return {
+        reply: `Workdir: ${next}`,
+        sessionSlot: session.shortId,
+        sessionName: session.id,
+        sessionNick: getSessionNick(session),
+        logEnabled: interactionLogger.isEnabled()
+      };
+    } catch (err) {
+      return {
+        reply: err instanceof Error ? err.message : String(err),
+        sessionSlot: session.shortId,
+        sessionName: session.id,
+        sessionNick: getSessionNick(session),
+        logEnabled: interactionLogger.isEnabled()
+      };
+    }
+  }
+
+  if (cmd === "/workdir") {
+    const value = parts.slice(1).join(" ").trim();
+
+    if (!value || value.toLowerCase() === "status") {
+      const current = store.getSessionWorkdirOverride(session.id) || config.codexWorkdir;
+      return {
+        reply: `Workdir: ${current}`,
+        sessionSlot: session.shortId,
+        sessionName: session.id,
+        sessionNick: getSessionNick(session),
+        logEnabled: interactionLogger.isEnabled()
+      };
+    }
+
+    if (value.toLowerCase() === "clear") {
+      store.setSessionWorkdirOverride(session.id, "");
+      return {
+        reply: `Workdir: ${config.codexWorkdir}`,
+        sessionSlot: session.shortId,
+        sessionName: session.id,
+        sessionNick: getSessionNick(session),
+        logEnabled: interactionLogger.isEnabled()
+      };
+    }
+
+    const saved = store.setSessionWorkdirOverride(session.id, path.resolve(value));
+    return {
+      reply: `Workdir: ${saved}`,
+      sessionSlot: session.shortId,
+      sessionName: session.id,
+      sessionNick: getSessionNick(session),
       logEnabled: interactionLogger.isEnabled()
     };
   }

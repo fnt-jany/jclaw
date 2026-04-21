@@ -10,7 +10,7 @@ const schema = z.object({
   CODEX_COMMAND: z.string().default("auto"),
   CODEX_ARGS_TEMPLATE: z.string().default("{prompt}"),
   CODEX_WORKDIR: z.string().default("."),
-  CODEX_TIMEOUT_MS: z.coerce.number().int().positive().default(120000),
+  CODEX_TIMEOUT_MS: z.coerce.number().int().positive().default(3600000),
   MAX_OUTPUT_CHARS: z.coerce.number().int().positive().default(3500),
   CODEX_NODE_OPTIONS: z.string().default(""),
   GEMINI_SESSION_SLOTS: z.string().default("Y,Z"),

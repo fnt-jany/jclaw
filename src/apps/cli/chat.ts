@@ -4,6 +4,7 @@ import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { loadConfig } from "../../core/config/env";
 import { SessionStore, Session } from "../../core/session/sessionStore";
+import { assertDirectoryExists, formatDirectoryListing, getEffectiveSessionWorkdir, resolveSessionCdTarget } from "../../core/session/workdir";
 import { cancelSessionRuns, runLlm } from "../../core/llm/execute";
 import { resolveRunnerForSession } from "../../core/llm/router";
 import { formatAllModelCatalogs, formatModelCatalog, hasModelCatalog } from "../../core/llm/modelCatalog";
@@ -57,7 +58,11 @@ function printHelp(): void {
       `${LOG_COMMAND} Toggle interaction logging`,
       "/plan <on|off|status> Toggle plan mode",
       "/cancel              Cancel the running request in current slot",
+      "/pwd                 Show effective workdir",
+      "/ls                  List files in effective workdir",
+      "/cd <path|..>        Change effective workdir",
       "/reason <none|low|medium|high|status> Set reasoning effort",
+      "/workdir <path|status|clear> Set workdir override for this slot",
       "/model <name|status|clear> Set model override for this slot",
       "/models [current|all|codex|gemini|claude] Show model arguments",
       "/slot <list|show|bind> Manage slot-provider-thread mapping",
@@ -69,6 +74,19 @@ function printHelp(): void {
 function normalizeCommand(line: string): string {
   if (line.startsWith(":")) {
     return `/${line.slice(1)}`;
+  }
+  const trimmed = line.trim();
+  if (/^pwd$/i.test(trimmed)) {
+    return "/pwd";
+  }
+  if (/^ls$/i.test(trimmed)) {
+    return "/ls";
+  }
+  if (/^cd\.\.$/i.test(trimmed)) {
+    return "/cd ..";
+  }
+  if (/^cd\s+/i.test(trimmed)) {
+    return `/${trimmed}`;
   }
   return line;
 }
@@ -94,7 +112,7 @@ async function runPrompt(
     sessionId: session.id,
     threadId: session.threadId,
     timeoutMs: config.codexTimeoutMs,
-    workdir: config.codexWorkdir,
+    workdir: getEffectiveSessionWorkdir(store, session.id, config.codexWorkdir),
     codexNodeOptions: config.codexNodeOptions,
     reasoningEffort: store.getReasoningEffort(session.id),
     provider: runner.provider,
@@ -303,6 +321,54 @@ export async function startCliChat(): Promise<void> {
           continue;
         }
         output.write("Usage: /reason <none|low|medium|high|status>\n");
+        continue;
+      }
+
+      if (line.startsWith("/pwd")) {
+        output.write(`Workdir: ${getEffectiveSessionWorkdir(store, session.id, config.codexWorkdir)}\n`);
+        continue;
+      }
+
+      if (line.startsWith("/ls")) {
+        const target = getEffectiveSessionWorkdir(store, session.id, config.codexWorkdir);
+        try {
+          output.write([target, "", await formatDirectoryListing(target)].join("\n") + "\n");
+        } catch (err) {
+          output.write(`${err instanceof Error ? err.message : String(err)}\n`);
+        }
+        continue;
+      }
+
+      if (line.startsWith("/cd")) {
+        const arg = line.slice(3).trim();
+        if (!arg) {
+          output.write("Usage: /cd <path|..>\n");
+          continue;
+        }
+        try {
+          const next = await resolveSessionCdTarget(getEffectiveSessionWorkdir(store, session.id, config.codexWorkdir), arg);
+          await assertDirectoryExists(next);
+          store.setSessionWorkdirOverride(session.id, next);
+          output.write(`Workdir: ${next}\n`);
+        } catch (err) {
+          output.write(`${err instanceof Error ? err.message : String(err)}\n`);
+        }
+        continue;
+      }
+
+      if (line.startsWith("/workdir")) {
+        const arg = line.slice(8).trim();
+        if (!arg || arg.toLowerCase() === "status") {
+          output.write(`Workdir: ${getEffectiveSessionWorkdir(store, session.id, config.codexWorkdir)}\n`);
+          continue;
+        }
+        if (arg.toLowerCase() === "clear") {
+          store.setSessionWorkdirOverride(session.id, "");
+          output.write(`Workdir: ${config.codexWorkdir}\n`);
+          continue;
+        }
+        const saved = store.setSessionWorkdirOverride(session.id, path.resolve(arg));
+        output.write(`Workdir: ${saved}\n`);
         continue;
       }
 

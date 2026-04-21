@@ -374,6 +374,28 @@ export class SessionStore {
     return this.getSessionModelOverride(sessionId);
   }
 
+  getSessionWorkdirOverride(sessionId: string): string {
+    const row = this.db
+      .prepare("SELECT workdir_override FROM session_preferences WHERE session_id = ?")
+      .get(sessionId) as { workdir_override: string } | undefined;
+
+    return (row?.workdir_override ?? "").trim();
+  }
+
+  setSessionWorkdirOverride(sessionId: string, workdir: string): string {
+    const normalized = workdir.trim().slice(0, 1024);
+
+    this.db
+      .prepare(
+        `INSERT INTO session_preferences(session_id, workdir_override)
+         VALUES (?, ?)
+         ON CONFLICT(session_id) DO UPDATE SET workdir_override = excluded.workdir_override`
+      )
+      .run(sessionId, normalized);
+
+    return this.getSessionWorkdirOverride(sessionId);
+  }
+
   getSessionNickname(sessionId: string): string {
     const row = this.db
       .prepare("SELECT nickname FROM session_preferences WHERE session_id = ?")

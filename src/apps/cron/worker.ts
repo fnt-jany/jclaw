@@ -3,6 +3,7 @@ import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
 import { loadConfig } from "../../core/config/env";
 import { SessionStore } from "../../core/session/sessionStore";
+import { getEffectiveSessionWorkdir } from "../../core/session/workdir";
 import { runLlm } from "../../core/llm/execute";
 import { resolveRunnerForSession } from "../../core/llm/router";
 import { resolveLlmProviderForSession } from "../../core/llm/registry";
@@ -230,7 +231,7 @@ async function executeJob(jobId: string): Promise<void> {
       sessionId: session.id,
       threadId: session.threadId,
       timeoutMs: config.codexTimeoutMs,
-      workdir: config.codexWorkdir,
+      workdir: getEffectiveSessionWorkdir(sessionStore, session.id, config.codexWorkdir),
       codexNodeOptions: config.codexNodeOptions,
       reasoningEffort: sessionStore.getReasoningEffort(session.id),
       provider: runner.provider,

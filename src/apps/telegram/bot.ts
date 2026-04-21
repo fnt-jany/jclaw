@@ -5,6 +5,7 @@ import { Telegraf } from "telegraf";
 import type { Context } from "telegraf";
 import { loadConfig } from "../../core/config/env";
 import { SessionStore } from "../../core/session/sessionStore";
+import { assertDirectoryExists, formatDirectoryListing, getEffectiveSessionWorkdir, resolveSessionCdTarget } from "../../core/session/workdir";
 import { cancelSessionRuns, runLlm } from "../../core/llm/execute";
 import { resolveRunnerForSession } from "../../core/llm/router";
 import { formatAllModelCatalogs, formatModelCatalog, hasModelCatalog } from "../../core/llm/modelCatalog";
@@ -381,11 +382,11 @@ function attachHandlers(bot: Telegraf, resolvedCodexCommand: string): void {
           sessionId: session.id,
           threadId: session.threadId,
           timeoutMs: config.codexTimeoutMs,
-          workdir: config.codexWorkdir,
+          workdir: getEffectiveSessionWorkdir(store, session.id, config.codexWorkdir),
           codexNodeOptions: config.codexNodeOptions,
-      reasoningEffort: store.getReasoningEffort(session.id),
-      provider: runner.provider,
-      modelOverride: store.getSessionModelOverride(session.id),
+          reasoningEffort: store.getReasoningEffort(session.id),
+          provider: runner.provider,
+          modelOverride: store.getSessionModelOverride(session.id),
           onStdoutChunk: (chunk) => onChunk("stdout", chunk),
           onStderrChunk: (chunk) => onChunk("stderr", chunk)
         });
@@ -459,7 +460,11 @@ function attachHandlers(bot: Telegraf, resolvedCodexCommand: string): void {
       "/slot <list|show|bind> (/t) - manage slot-provider-thread mapping",
       "/plan <on|off|status> (/p) - toggle plan mode",
       "/cancel - cancel the running request in current session",
+      "/pwd - show effective workdir",
+      "/ls - list files in effective workdir",
+      "/cd <path|..> - change effective workdir",
       "/reason <none|low|medium|high|status> - set reasoning effort per session",
+      "/workdir <path|status|clear> - set workdir override per session",
       "/model <name|status|clear> - set model override per session",
       "/models [current|all|codex|gemini|claude] - show model arguments",
       "/status (/a) - bot status",
@@ -585,6 +590,54 @@ function attachHandlers(bot: Telegraf, resolvedCodexCommand: string): void {
 
     const session = store.getOrCreateSessionByChat(chatId, "telegram");
     await ctx.reply(`Active session: ${session.shortId}`);
+  });
+
+  bot.command("pwd", async (ctx) => {
+    const chatId = chatIdOf(ctx);
+    if (!chatId || !isAllowed(chatId)) {
+      await ctx.reply("Access denied.");
+      return;
+    }
+    const session = store.getOrCreateSessionByChat(chatId, "telegram");
+    await ctx.reply(`Workdir (${session.shortId}): ${getEffectiveSessionWorkdir(store, session.id, config.codexWorkdir)}`);
+  });
+
+  bot.command("ls", async (ctx) => {
+    const chatId = chatIdOf(ctx);
+    if (!chatId || !isAllowed(chatId)) {
+      await ctx.reply("Access denied.");
+      return;
+    }
+    const session = store.getOrCreateSessionByChat(chatId, "telegram");
+    const target = getEffectiveSessionWorkdir(store, session.id, config.codexWorkdir);
+    try {
+      await ctx.reply([target, "", await formatDirectoryListing(target)].join("\n"));
+    } catch (err) {
+      await ctx.reply(err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  bot.command("cd", async (ctx) => {
+    const chatId = chatIdOf(ctx);
+    if (!chatId || !isAllowed(chatId)) {
+      await ctx.reply("Access denied.");
+      return;
+    }
+    const parts = (ctx.message as { text?: string }).text?.split(" ").filter(Boolean) ?? [];
+    const value = parts.slice(1).join(" ").trim();
+    const session = store.getOrCreateSessionByChat(chatId, "telegram");
+    if (!value) {
+      await ctx.reply("Usage: /cd <path|..>");
+      return;
+    }
+    try {
+      const next = await resolveSessionCdTarget(getEffectiveSessionWorkdir(store, session.id, config.codexWorkdir), value);
+      await assertDirectoryExists(next);
+      store.setSessionWorkdirOverride(session.id, next);
+      await ctx.reply(`Workdir (${session.shortId}): ${next}`);
+    } catch (err) {
+      await ctx.reply(err instanceof Error ? err.message : String(err));
+    }
   });
 
   bot.command("w", async (ctx) => {
@@ -768,6 +821,32 @@ function attachHandlers(bot: Telegraf, resolvedCodexCommand: string): void {
     }
 
     await ctx.reply("Usage: /reason <none|low|medium|high|status>");
+  });
+
+  bot.command("workdir", async (ctx) => {
+    const chatId = chatIdOf(ctx);
+    if (!chatId || !isAllowed(chatId)) {
+      await ctx.reply("Access denied.");
+      return;
+    }
+
+    const parts = (ctx.message as { text?: string }).text?.split(" ").filter(Boolean) ?? [];
+    const value = parts.slice(1).join(" ").trim();
+    const current = store.getOrCreateSessionByChat(chatId, "telegram");
+
+    if (!value || value.toLowerCase() === "status") {
+      await ctx.reply(`Workdir (${current.shortId}): ${store.getSessionWorkdirOverride(current.id) || config.codexWorkdir}`);
+      return;
+    }
+
+    if (value.toLowerCase() === "clear") {
+      store.setSessionWorkdirOverride(current.id, "");
+      await ctx.reply(`Workdir (${current.shortId}): ${config.codexWorkdir}`);
+      return;
+    }
+
+    const saved = store.setSessionWorkdirOverride(current.id, path.resolve(value));
+    await ctx.reply(`Workdir (${current.shortId}): ${saved}`);
   });
 
 
@@ -1156,8 +1235,37 @@ PID: ${process.pid}`);
   });
 
   bot.on("text", async (ctx) => {
-    const text = (ctx.message as { text?: string }).text ?? "";
+    const text = ((ctx.message as { text?: string }).text ?? "").trim();
     if (text.startsWith("/")) {
+      return;
+    }
+
+    if (/^pwd$/i.test(text)) {
+      await bot.handleUpdate({
+        ...ctx.update,
+        message: { ...ctx.message, text: "/pwd" }
+      } as typeof ctx.update);
+      return;
+    }
+    if (/^ls$/i.test(text)) {
+      await bot.handleUpdate({
+        ...ctx.update,
+        message: { ...ctx.message, text: "/ls" }
+      } as typeof ctx.update);
+      return;
+    }
+    if (/^cd\.\.$/i.test(text)) {
+      await bot.handleUpdate({
+        ...ctx.update,
+        message: { ...ctx.message, text: "/cd .." }
+      } as typeof ctx.update);
+      return;
+    }
+    if (/^cd\s+/i.test(text)) {
+      await bot.handleUpdate({
+        ...ctx.update,
+        message: { ...ctx.message, text: `/${text}` }
+      } as typeof ctx.update);
       return;
     }
 
@@ -1192,10 +1300,14 @@ export async function startTelegramBot(): Promise<void> {
     { command: "session", description: "Switch session A-Z" },
     { command: "history", description: "Show recent runs" },
     { command: "where", description: "Show active session" },
+    { command: "pwd", description: "Show effective workdir" },
+    { command: "ls", description: "List files in workdir" },
+    { command: "cd", description: "Change workdir" },
     { command: "whoami", description: "Show your chat id" },
     { command: "log", description: "Toggle interaction logging" },
     { command: "plan", description: "Toggle plan mode" },
     { command: "reason", description: "Set reasoning effort" },
+    { command: "workdir", description: "Set workdir override" },
     { command: "model", description: "Set model override" },
     { command: "models", description: "Show model arguments" },
     { command: "slot", description: "Manage slot bindings" },
