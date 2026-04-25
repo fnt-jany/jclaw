@@ -1096,7 +1096,8 @@
     const SLOT_TABS = Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i));
     const SLOT_PAGE_SIZE = 8;
     const SLOT_PAGE_STARTS = [0, 8, 16, 24];
-    const HISTORY_LIMIT = 120;
+    const HISTORY_INITIAL_LIMIT = 40;
+    const HISTORY_PAGE_LIMIT = 40;
     const API_BASE = String(window.JCLAW_API_BASE || '').replace(/\/$/, '');
     const IS_COARSE_POINTER = window.matchMedia('(pointer: coarse)').matches;
     let viewportHeightBaseline = window.visualViewport?.height ?? window.innerHeight;
@@ -1156,6 +1157,7 @@
     const CLAUDE_UPDATE_DISMISS_KEY = 'jclaw_claude_update_dismissed';
 
     const sessionLogs = new Map();
+    const sessionHistoryMeta = new Map();
     const sessionNickBySlot = new Map();
     const hydratedSlots = new Set();
     const hydratingSlots = new Map();
@@ -1194,6 +1196,18 @@
 
     function sessionKey(slot) {
       return slot || '_default';
+    }
+
+    function getHistoryMeta(slot) {
+      const key = sessionKey(slot);
+      if (!sessionHistoryMeta.has(key)) {
+        sessionHistoryMeta.set(key, {
+          oldestTimestamp: '',
+          hasMore: false,
+          loadingOlder: false
+        });
+      }
+      return sessionHistoryMeta.get(key);
     }
 
     function getCodexVersionCheckMarker(auth) {
@@ -1998,6 +2012,28 @@ ${row.error}` : '']
       return out;
     }
 
+    function applyHistoryBatch(slot, rows, options = {}) {
+      const { appendOlder = false, hasMore = false } = options;
+      const formatted = formatHistoryRows(rows, slot);
+      const key = sessionKey(slot);
+      const existing = sessionLogs.get(key) || [];
+      let nextLogs = formatted;
+
+      if (appendOlder) {
+        nextLogs = [...formatted, ...existing];
+      } else if (formatted.length) {
+        const firstTs = formatted[0].timestamp;
+        const older = existing.filter((item) => item.timestamp < firstTs);
+        nextLogs = [...older, ...formatted];
+      }
+
+      sessionLogs.set(key, nextLogs);
+
+      const meta = getHistoryMeta(slot);
+      meta.hasMore = Boolean(hasMore);
+      meta.oldestTimestamp = nextLogs.length ? (nextLogs[0].timestamp || '') : '';
+    }
+
     async function ensureSessionHydrated(slot) {
       if (!slot || hydratedSlots.has(slot)) {
         return;
@@ -2009,12 +2045,12 @@ ${row.error}` : '']
 
       const task = (async () => {
         try {
-          const data = await api(`/api/session-history?slot=${encodeURIComponent(slot)}&limit=${HISTORY_LIMIT}`, {
+          const data = await api(`/api/session-history?slot=${encodeURIComponent(slot)}&limit=${HISTORY_INITIAL_LIMIT}`, {
             method: 'GET',
             headers: {}
           });
           const rows = Array.isArray(data.items) ? data.items : [];
-          sessionLogs.set(sessionKey(slot), formatHistoryRows(rows, slot));
+          applyHistoryBatch(slot, rows, { hasMore: Boolean(data.hasMore) });
           hydratedSlots.add(slot);
           if (slot === currentSlot) {
             renderCurrentLog();
@@ -2076,12 +2112,12 @@ ${row.error}` : '']
       }
 
       sessionRefreshInFlight = (async () => {
-        const data = await api(`/api/session-history?slot=${encodeURIComponent(currentSlot)}&limit=${HISTORY_LIMIT}`, {
+        const data = await api(`/api/session-history?slot=${encodeURIComponent(currentSlot)}&limit=${HISTORY_INITIAL_LIMIT}`, {
           method: 'GET',
           headers: {}
         });
         const rows = Array.isArray(data.items) ? data.items : [];
-        sessionLogs.set(sessionKey(currentSlot), formatHistoryRows(rows, currentSlot));
+        applyHistoryBatch(currentSlot, rows, { hasMore: Boolean(data.hasMore) });
         hydratedSlots.add(currentSlot);
         renderCurrentLog();
       })();
@@ -2090,6 +2126,39 @@ ${row.error}` : '']
         await sessionRefreshInFlight;
       } finally {
         sessionRefreshInFlight = null;
+      }
+    }
+
+    async function loadOlderHistory(slot) {
+      if (!slot) {
+        return;
+      }
+      const meta = getHistoryMeta(slot);
+      if (meta.loadingOlder || !meta.hasMore || !meta.oldestTimestamp) {
+        return;
+      }
+
+      meta.loadingOlder = true;
+      const previousHeight = logEl.scrollHeight;
+      const previousTop = logEl.scrollTop;
+      try {
+        const data = await api(`/api/session-history?slot=${encodeURIComponent(slot)}&limit=${HISTORY_PAGE_LIMIT}&before=${encodeURIComponent(meta.oldestTimestamp)}`, {
+          method: 'GET',
+          headers: {}
+        });
+        const rows = Array.isArray(data.items) ? data.items : [];
+        if (!rows.length) {
+          meta.hasMore = false;
+          return;
+        }
+        applyHistoryBatch(slot, rows, { appendOlder: true, hasMore: Boolean(data.hasMore) });
+        if (slot === currentSlot) {
+          renderCurrentLog();
+          const heightDelta = logEl.scrollHeight - previousHeight;
+          logEl.scrollTop = previousTop + heightDelta;
+        }
+      } finally {
+        meta.loadingOlder = false;
       }
     }
 
@@ -2927,6 +2996,9 @@ ${row.error}` : '']
     });
 
     logEl.addEventListener('scroll', () => {
+      if (logEl.scrollTop <= 80) {
+        void loadOlderHistory(currentSlot);
+      }
       if (isLogNearBottom()) {
         if (autoScrollLocked || unseenMessageCount > 0) {
           resetAutoScrollState(false);

@@ -3002,6 +3002,7 @@ async function handleApiSessionHistory(req: IncomingMessage, res: ServerResponse
   const slot = (url.searchParams.get("slot") ?? "").trim().toUpperCase();
   const limitRaw = Number(url.searchParams.get("limit") ?? "60");
   const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(300, Math.floor(limitRaw))) : 60;
+  const before = (url.searchParams.get("before") ?? "").trim();
   const fromDate = (url.searchParams.get("fromDate") ?? "").trim();
   const toDate = (url.searchParams.get("toDate") ?? "").trim();
 
@@ -3026,12 +3027,19 @@ async function handleApiSessionHistory(req: IncomingMessage, res: ServerResponse
     }
 
     let rows;
+    let hasMore = false;
     let range: { fromDate: string; toDate: string; startIso: string; endIsoExclusive: string } | null = null;
     if (fromDate || toDate) {
       range = parseKstDateRange(fromDate || toDate, toDate || fromDate);
       rows = store.listHistoryByTimeRange(session.id, range.startIso, range.endIsoExclusive);
+    } else if (before) {
+      const fetched = store.listHistoryBefore(session.id, before, limit + 1);
+      hasMore = fetched.length > limit;
+      rows = hasMore ? fetched.slice(1) : fetched;
     } else {
-      rows = store.listHistory(session.id, limit);
+      const fetched = store.listHistory(session.id, limit + 1);
+      hasMore = fetched.length > limit;
+      rows = hasMore ? fetched.slice(1) : fetched;
     }
 
     json(res, 200, {
@@ -3041,6 +3049,7 @@ async function handleApiSessionHistory(req: IncomingMessage, res: ServerResponse
       timezone: KST_TIME_ZONE,
       fromDate: range?.fromDate ?? null,
       toDate: range?.toDate ?? null,
+      hasMore,
       items: rows
     });
   } catch (err) {

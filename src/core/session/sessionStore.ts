@@ -476,6 +476,41 @@ export class SessionStore {
       }));
   }
 
+  listHistoryBefore(sessionId: string, beforeIso: string, limit = 10): RunRecord[] {
+    this.ensureSessionExists(sessionId);
+
+    const rows = this.db
+      .prepare(
+        `SELECT id, timestamp, input, output, error, exit_code, duration_ms
+         FROM run_history
+         WHERE session_id = ?
+           AND timestamp < ?
+         ORDER BY timestamp DESC
+         LIMIT ?`
+      )
+      .all(sessionId, beforeIso, Math.max(1, limit)) as Array<{
+      id: string;
+      timestamp: string;
+      input: string;
+      output: string;
+      error: string | null;
+      exit_code: number | null;
+      duration_ms: number;
+    }>;
+
+    return rows
+      .reverse()
+      .map((row) => ({
+        id: row.id,
+        timestamp: row.timestamp,
+        input: row.input,
+        output: row.output,
+        error: row.error,
+        exitCode: row.exit_code,
+        durationMs: row.duration_ms
+      }));
+  }
+
   listHistoryByTimeRange(sessionId: string, startIso: string, endIso: string, limit = 5000): RunRecord[] {
     this.ensureSessionExists(sessionId);
 
