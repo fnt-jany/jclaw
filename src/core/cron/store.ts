@@ -3,6 +3,7 @@ import { CronExpressionParser } from "cron-parser";
 import { openDb } from "../db/database";
 
 const DEFAULT_CRON_TIMEZONE = "Asia/Seoul";
+const MOJIBAKE_PATTERN = /(?:[\u00c3\u00c2\u00e2][\u0080-\u00ff]?|[\u00ec\u00ed\u00eb\u00ea][\u0080-\u00ff]?|\uFFFD|\?{3,})/;
 
 export type CronJob = {
   id: string;
@@ -76,6 +77,7 @@ export class CronStore {
     const id = `cj_${randomBytes(3).toString("hex")}`;
     const timezone = normalizeCronTimezone(input.timezone ?? null);
     const nextRunAt = computeNextRunAt(input.cron, timezone, new Date());
+    warnIfSuspiciousPromptEncoding(id, input.prompt);
 
     this.db
       .prepare(
@@ -169,6 +171,14 @@ export class CronStore {
 
     return this.get(id);
   }
+}
+
+function warnIfSuspiciousPromptEncoding(jobId: string, prompt: string): void {
+  if (!MOJIBAKE_PATTERN.test(prompt)) {
+    return;
+  }
+  const preview = prompt.replace(/\r?\n/g, "\\n").slice(0, 160);
+  console.warn(`[cron] suspicious prompt encoding job=${jobId} prompt=${preview}`);
 }
 
 function mapCronRow(row: Record<string, unknown>): CronJob {

@@ -3,6 +3,19 @@
   flags: Record<string, string>;
 };
 
+export type ArgsWithBody = {
+  argsText: string;
+  body: string | null;
+};
+
+export function splitArgsAndBody(input: string): ArgsWithBody {
+  const normalized = input.replace(/\r\n/g, "\n");
+  const lines = normalized.split("\n");
+  const argsText = (lines.shift() ?? "").trim();
+  const body = lines.join("\n").trim();
+  return { argsText, body: body || null };
+}
+
 export function tokenizeArgs(input: string): string[] {
   const out: string[] = [];
   const re = /"([^"]*)"|'([^']*)'|(\S+)/g;

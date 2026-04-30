@@ -1,4 +1,5 @@
 import dotenv from "dotenv";
+import { readFile } from "node:fs/promises";
 import { loadConfig } from "../../core/config/env";
 import { CronStore } from "../../core/cron/store";
 import { buildOneShotCron } from "../../core/cron/oneshot";
@@ -36,13 +37,56 @@ function argValue(args: string[], key: string): string | null {
   return args[idx + 1] ?? null;
 }
 
+function hasFlag(args: string[], key: string): boolean {
+  return args.includes(key);
+}
+
+async function readPromptFromStdin(): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let data = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => {
+      data += chunk;
+    });
+    process.stdin.on("error", reject);
+    process.stdin.on("end", () => resolve(data.trim()));
+  });
+}
+
+async function promptValue(args: string[]): Promise<string | null> {
+  const directPrompt = argValue(args, "--prompt");
+  const promptFile = argValue(args, "--prompt-file");
+  const useStdin = hasFlag(args, "--prompt-stdin");
+  const count = [directPrompt !== null, promptFile !== null, useStdin].filter(Boolean).length;
+  if (count > 1) {
+    throw new Error("Use only one of --prompt, --prompt-file, or --prompt-stdin");
+  }
+  if (promptFile) {
+    return (await readFile(promptFile, "utf8")).trim();
+  }
+  if (useStdin) {
+    return readPromptFromStdin();
+  }
+  return directPrompt;
+}
+
+async function promptValueOrExit(args: string[]): Promise<string | null> {
+  try {
+    return await promptValue(args);
+  } catch (err) {
+    console.error(String(err));
+    process.exit(1);
+    return null;
+  }
+}
+
 function usage(): void {
   console.log(
     [
       "Usage:",
       "  npm run cron:cli -- list",
-      `  npm run cron:cli -- add --chat <chat_id> --session <${SLOT_TARGET_HINT}> --cron \"*/5 * * * *\" --prompt \"text\" [--tz Asia/Seoul]`,
-      `  npm run cron:cli -- once --chat <chat_id> --session <${SLOT_TARGET_HINT}> --at \"2026-02-21T16:00:00+09:00\" --prompt \"text\"`,
+      `  npm run cron:cli -- add --chat <chat_id> --session <${SLOT_TARGET_HINT}> --cron \"*/5 * * * *\" (--prompt \"text\" | --prompt-file prompt.txt | --prompt-stdin) [--tz Asia/Seoul]`,
+      `  npm run cron:cli -- once --chat <chat_id> --session <${SLOT_TARGET_HINT}> --at \"2026-02-21T16:00:00+09:00\" (--prompt \"text\" | --prompt-file prompt.txt | --prompt-stdin)`,
       "  npm run cron:cli -- remove <job_id>",
       "  npm run cron:cli -- enable <job_id>",
       "  npm run cron:cli -- disable <job_id>"
@@ -92,7 +136,7 @@ export async function startCronCli(): Promise<void> {
     const chatId = argValue(parsed.args, "--chat") ?? Array.from(config.allowedChatIds)[0] ?? DEFAULT_LOCAL_CHAT_ID;
     const sessionTarget = argValue(parsed.args, "--session");
     const cron = argValue(parsed.args, "--cron");
-    const prompt = argValue(parsed.args, "--prompt");
+    const prompt = await promptValueOrExit(parsed.args);
     const tz = argValue(parsed.args, "--tz");
 
     if (!sessionTarget || !cron || !prompt) {
@@ -127,7 +171,7 @@ export async function startCronCli(): Promise<void> {
     const chatId = argValue(parsed.args, "--chat") ?? Array.from(config.allowedChatIds)[0] ?? DEFAULT_LOCAL_CHAT_ID;
     const sessionTarget = argValue(parsed.args, "--session");
     const at = argValue(parsed.args, "--at");
-    const prompt = argValue(parsed.args, "--prompt");
+    const prompt = await promptValueOrExit(parsed.args);
 
     if (!sessionTarget || !at || !prompt) {
       console.error("Missing --session, --at or --prompt");

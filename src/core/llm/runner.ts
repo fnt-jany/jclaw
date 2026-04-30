@@ -20,7 +20,6 @@ export type RunLlmProcessInput = {
   progressIntervalMs?: number;
   onProgress?: (progress: { elapsedMs: number; stdoutChars: number; stderrChars: number }) => void;
   inactivityTimeoutMs?: number;
-  completionGraceMs?: number;
 };
 
 export type RunLlmProcessResult = {
@@ -35,6 +34,8 @@ type GeminiSessionRow = {
   title: string;
   id: string;
 };
+
+const PROMPT_ARG_TOKEN = "__JCLAW_PROMPT_STDIN__";
 
 const activeSessionChildren = new Map<string, Set<ReturnType<typeof spawn>>>();
 
@@ -295,12 +296,13 @@ async function getLatestGeminiSessionId(input: RunLlmProcessInput, tag: string |
 function buildArgs(input: RunLlmProcessInput, prompt: string): { args: string[]; stdinPrompt: string | null } {
   const provider = input.provider ?? "codex";
   const resolvedThreadId = input.threadId ?? null;
+  const promptReplacement = provider === "codex" ? PROMPT_ARG_TOKEN : prompt;
   const reasoningArgs =
     input.reasoningEffort && input.reasoningEffort !== "none"
       ? ["-c", `model_reasoning_effort=\"${input.reasoningEffort}\"`]
       : [];
   const argsString = input.codexArgsTemplate
-    .replaceAll("{prompt}", prompt)
+    .replaceAll("{prompt}", promptReplacement)
     .replaceAll("{session_id}", input.sessionId)
     .replaceAll("{codex_session_id}", resolvedThreadId ?? "")
     .replaceAll("{thread_id}", resolvedThreadId ?? "");
@@ -331,7 +333,7 @@ function buildArgs(input: RunLlmProcessInput, prompt: string): { args: string[];
   };
 
   const finalizeCodexArgs = (args: string[]): { args: string[]; stdinPrompt: string | null } => {
-    const targetIndex = args.lastIndexOf(prompt);
+    const targetIndex = args.lastIndexOf(PROMPT_ARG_TOKEN);
     if (targetIndex < 0) {
       return { args: applyModelOverride(args), stdinPrompt: null };
     }
@@ -350,9 +352,9 @@ function buildArgs(input: RunLlmProcessInput, prompt: string): { args: string[];
   }
 
   if (provider === "codex" && resolvedThreadId && parsed[0] === "exec" && !parsed.includes("resume")) {
-    const templateTokens = parseArgsStringToArgv(input.codexArgsTemplate).slice(1);
-    const options = templateTokens.filter((token) => token.startsWith("-"));
-    return finalizeCodexArgs(["exec", "resume", ...options, ...reasoningArgs, resolvedThreadId, prompt]);
+    const templateTokens = parseArgsStringToArgv(input.codexArgsTemplate.replaceAll("{prompt}", PROMPT_ARG_TOKEN)).slice(1);
+    const options = templateTokens.filter((token) => token !== PROMPT_ARG_TOKEN);
+    return finalizeCodexArgs(["exec", "resume", ...options, ...reasoningArgs, resolvedThreadId, PROMPT_ARG_TOKEN]);
   }
 
   if (provider === "codex" && parsed[0] === "exec" && reasoningArgs.length > 0) {
@@ -395,7 +397,6 @@ export async function runLlmProcess(input: RunLlmProcessInput): Promise<RunLlmPr
       input.inactivityTimeoutMs ??
       (Number.isFinite(configuredInactivityTimeoutMs) ? configuredInactivityTimeoutMs : 600000);
     const inactivityTimeoutMs = rawInactivityTimeoutMs <= 0 ? 0 : Math.max(1000, rawInactivityTimeoutMs);
-    const completionGraceMs = Math.max(5000, input.completionGraceMs ?? 15000);
     const progressTimer =
       input.onProgress
         ? setInterval(() => {
@@ -423,7 +424,7 @@ export async function runLlmProcess(input: RunLlmProcessInput): Promise<RunLlmPr
       child.once("close", () => unregisterActiveChild(input.sessionId, child));
 
       if (stdinPrompt !== null) {
-        child.stdin?.write(stdinPrompt);
+        child.stdin?.write(stdinPrompt, "utf8");
       }
       child.stdin?.end();
     } catch (err) {
@@ -449,25 +450,6 @@ export async function runLlmProcess(input: RunLlmProcessInput): Promise<RunLlmPr
       const now = Date.now();
       const lastAt = lastActivityAt ?? started;
       const idleMs = now - lastAt;
-
-      if (completionHintAt && idleMs >= completionGraceMs) {
-        settled = true;
-        clearTimeout(timer);
-        if (progressTimer) {
-          clearInterval(progressTimer);
-        }
-        clearInterval(inactivityTimer);
-        child.kill();
-
-        resolve({
-          output: getResolvedOutput(),
-          error: null,
-          exitCode: 0,
-          durationMs: Date.now() - started,
-          threadId: extractCodexSessionId(stdout, stderr)
-        });
-        return;
-      }
 
       if (inactivityTimeoutMs <= 0 || idleMs < inactivityTimeoutMs) {
         return;

@@ -18,7 +18,7 @@ import { InteractionLogger } from "../../core/logging/interactionLogger";
 import { CronStore } from "../../core/cron/store";
 import { buildOneShotCron } from "../../core/cron/oneshot";
 import { notifyCronWorkerWake } from "../../core/cron/wakeup";
-import { parseArgs } from "../../core/commands/args";
+import { parseArgs, splitArgsAndBody } from "../../core/commands/args";
 import { DEFAULT_LOCAL_CHAT_ID, LOG_COMMAND, SLOT_TARGET_HINT, TEXT } from "../../shared/constants";
 import { CommandResult, sessionSummary } from "../../shared/types";
 import { ChatJobStore, ChatJobRecord } from "../../core/chat/jobStore";
@@ -1414,7 +1414,9 @@ async function handleCronCommand(chatId: string, cmdLine: string, session: Sessi
         "Usage:",
         "/cron list",
         '/cron add --session A --cron "*/5 * * * *" --prompt "status report" [--tz Asia/Seoul]',
+        '/cron add --session A --cron "*/5 * * * *" [--tz Asia/Seoul]\\nstatus report',
         '/cron once --session A --at "2026-02-21T16:00:00+09:00" --prompt "one shot"',
+        '/cron once --session A --at "2026-02-21T16:00:00+09:00"\\none shot',
         "/cron remove <job_id>",
         "/cron enable <job_id>",
         "/cron disable <job_id>"
@@ -1426,7 +1428,8 @@ async function handleCronCommand(chatId: string, cmdLine: string, session: Sessi
     };
   }
 
-  const parsed = parseArgs(rest);
+  const split = splitArgsAndBody(rest);
+  const parsed = parseArgs(split.argsText);
   const sub = parsed.positional[0]?.toLowerCase();
 
   if (sub === "list") {
@@ -1452,7 +1455,7 @@ async function handleCronCommand(chatId: string, cmdLine: string, session: Sessi
   if (sub === "once") {
     const sessionTarget = parsed.flags.session;
     const at = parsed.flags.at;
-    const prompt = parsed.flags.prompt;
+    const prompt = parsed.flags.prompt || split.body;
 
     if (!sessionTarget || !at || !prompt) {
       return {
@@ -1489,7 +1492,7 @@ next=${job.nextRunAt}`,
   if (sub === "add") {
     const sessionTarget = parsed.flags.session;
     const cron = parsed.flags.cron;
-    const prompt = parsed.flags.prompt;
+    const prompt = parsed.flags.prompt || split.body;
     const timezone = parsed.flags.tz ?? null;
 
     if (!sessionTarget || !cron || !prompt) {
