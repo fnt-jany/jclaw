@@ -897,6 +897,29 @@
       }
     }
 
+    .copy-toast {
+      position: fixed;
+      left: 50%;
+      bottom: 112px;
+      transform: translateX(-50%);
+      background: rgba(39, 35, 31, 0.92);
+      color: #fff7ee;
+      padding: 10px 14px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+      box-shadow: 0 12px 24px rgba(39, 35, 31, 0.18);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 140ms ease;
+      z-index: 30;
+    }
+
+    .copy-toast.visible {
+      opacity: 1;
+    }
+
   </style>
 </head>
 <body>
@@ -1041,6 +1064,7 @@
         <div id="uploadOverlayText" class="upload-overlay-text">Preparing attachments...</div>
       </div>
     </div>
+    <div id="copyToast" class="copy-toast" aria-live="polite">Message copied</div>
   </main>
 
   <script src="https://accounts.google.com/gsi/client" async defer></script>
@@ -1092,12 +1116,15 @@
     const uploadOverlayEl = document.getElementById('uploadOverlay');
     const uploadProgressBarEl = document.getElementById('uploadProgressBar');
     const uploadOverlayTextEl = document.getElementById('uploadOverlayText');
+    const copyToastEl = document.getElementById('copyToast');
 
     const SLOT_TABS = Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i));
     const SLOT_PAGE_SIZE = 8;
     const SLOT_PAGE_STARTS = [0, 8, 16, 24];
     const HISTORY_INITIAL_LIMIT = 40;
     const HISTORY_PAGE_LIMIT = 40;
+    const HISTORY_TEXT_PREVIEW_LIMIT = 6000;
+    const ENABLE_VERSION_CHECKS = true;
     const API_BASE = String(window.JCLAW_API_BASE || '').replace(/\/$/, '');
     const IS_COARSE_POINTER = window.matchMedia('(pointer: coarse)').matches;
     let viewportHeightBaseline = window.visualViewport?.height ?? window.innerHeight;
@@ -1105,7 +1132,7 @@
     let currentSlot = '';
     let sessionEventsSource = null;
     let sessionEventsSlot = '';
-    let sessionRefreshInFlight = null;
+    const sessionRefreshInFlight = new Map();
     const faviconEl = document.querySelector('link[rel="icon"]');
     let serverLabel = 'local';
     let serverTheme = 'auto';
@@ -1163,6 +1190,7 @@
     const hydratingSlots = new Map();
     const sessionInputState = new Map();
     let pendingAttachments = [];
+    let copyToastTimer = null;
     const activeJobStreams = new Map();
     const pendingBubbleByJob = new Map();
     const syncingPendingSlots = new Set();
@@ -1340,6 +1368,7 @@
         wrap.className = `bubble-wrap ${row.type}`;
         const div = document.createElement('div');
         div.className = `bubble ${row.type}`;
+        div.dataset.copyText = row.text || '';
         const body = document.createElement('div');
         body.className = 'bubble-body';
         body.textContent = row.text;
@@ -1456,6 +1485,43 @@
 
     function setStatus(s) {
       statusEl.textContent = s;
+    }
+
+    function showCopyToast(message = 'Message copied') {
+      if (!copyToastEl) return;
+      copyToastEl.textContent = message;
+      copyToastEl.classList.add('visible');
+      if (copyToastTimer) clearTimeout(copyToastTimer);
+      copyToastTimer = setTimeout(() => {
+        copyToastEl.classList.remove('visible');
+      }, 1400);
+    }
+
+    async function copyTextToClipboard(text) {
+      if (!text) return false;
+      try {
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+          await navigator.clipboard.writeText(text);
+          return true;
+        }
+      } catch (_) {}
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.setAttribute('readonly', 'readonly');
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      textarea.style.pointerEvents = 'none';
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      let copied = false;
+      try {
+        copied = document.execCommand('copy');
+      } catch (_) {
+        copied = false;
+      }
+      textarea.remove();
+      return copied;
     }
 
     const SERVER_THEMES = [
@@ -2000,11 +2066,18 @@
     }
 
     function formatHistoryRows(rows, slot) {
+      const truncateHistoryText = (text) => {
+        const value = String(text || '');
+        if (value.length <= HISTORY_TEXT_PREVIEW_LIMIT) {
+          return value;
+        }
+        return `${value.slice(0, HISTORY_TEXT_PREVIEW_LIMIT)}\n\n...[truncated ${value.length - HISTORY_TEXT_PREVIEW_LIMIT} chars]`;
+      };
       const out = [];
       for (const row of rows) {
-        out.push({ text: row.input, type: 'user', slot, timestamp: row.timestamp });
-        const merged = [row.output?.trim() || '', row.error ? `ERR:
-${row.error}` : '']
+        out.push({ text: truncateHistoryText(row.input), type: 'user', slot, timestamp: row.timestamp });
+        const merged = [truncateHistoryText(row.output?.trim() || ''), row.error ? `ERR:
+${truncateHistoryText(row.error)}` : '']
           .filter(Boolean)
           .join('\n\n') || '(no output)';
         out.push({ text: merged, type: row.error ? 'err' : 'bot', slot, timestamp: row.timestamp });
@@ -2102,31 +2175,40 @@ ${row.error}` : '']
       sessionEventsSlot = '';
     }
 
-    async function refreshCurrentSessionHistory() {
-      if (!currentSlot) {
+    async function refreshSessionHistory(slot) {
+      if (!slot) {
         return;
       }
-      if (sessionRefreshInFlight) {
-        await sessionRefreshInFlight;
+      const key = sessionKey(slot);
+      if (sessionRefreshInFlight.has(key)) {
+        await sessionRefreshInFlight.get(key);
         return;
       }
 
-      sessionRefreshInFlight = (async () => {
-        const data = await api(`/api/session-history?slot=${encodeURIComponent(currentSlot)}&limit=${HISTORY_INITIAL_LIMIT}`, {
+      const task = (async () => {
+        const data = await api(`/api/session-history?slot=${encodeURIComponent(slot)}&limit=${HISTORY_INITIAL_LIMIT}`, {
           method: 'GET',
           headers: {}
         });
         const rows = Array.isArray(data.items) ? data.items : [];
-        applyHistoryBatch(currentSlot, rows, { hasMore: Boolean(data.hasMore) });
-        hydratedSlots.add(currentSlot);
+        applyHistoryBatch(slot, rows, { hasMore: Boolean(data.hasMore) });
+        hydratedSlots.add(slot);
         renderCurrentLog();
       })();
 
+      sessionRefreshInFlight.set(key, task);
       try {
-        await sessionRefreshInFlight;
+        await task;
       } finally {
-        sessionRefreshInFlight = null;
+        sessionRefreshInFlight.delete(key);
       }
+    }
+
+    async function refreshCurrentSessionHistory() {
+      if (!currentSlot) {
+        return;
+      }
+      await refreshSessionHistory(currentSlot);
     }
 
     async function loadOlderHistory(slot) {
@@ -2814,7 +2896,7 @@ ${row.error}` : '']
       try {
         const finalResult = await waitForChatJobSse(jobId, slotAtSend);
         applyState(finalResult, { adoptCurrent: currentSlot === slotAtSend });
-        updateBubble(pendingBubble, { text: finalResult.reply, type: 'bot' });
+        await refreshSessionHistory(slotAtSend);
       } catch (err) {
         updateBubble(pendingBubble, { text: String(err), type: 'err' });
       } finally {
@@ -3008,6 +3090,76 @@ ${row.error}` : '']
       autoScrollLocked = true;
       updateJumpLatestButton();
     });
+
+    const copyPressState = {
+      timer: null,
+      startX: 0,
+      startY: 0,
+      text: '',
+      fired: false
+    };
+
+    function clearCopyPressState() {
+      if (copyPressState.timer) {
+        clearTimeout(copyPressState.timer);
+      }
+      copyPressState.timer = null;
+      copyPressState.text = '';
+    }
+
+    logEl.addEventListener('pointerdown', (event) => {
+      const bubble = event.target instanceof Element ? event.target.closest('.bubble') : null;
+      if (!bubble) {
+        clearCopyPressState();
+        return;
+      }
+      if (event.pointerType === 'mouse' && event.button !== 0) {
+        return;
+      }
+      copyPressState.fired = false;
+      copyPressState.startX = event.clientX;
+      copyPressState.startY = event.clientY;
+      copyPressState.text = bubble.dataset.copyText || '';
+      clearCopyPressState();
+      copyPressState.text = bubble.dataset.copyText || '';
+      copyPressState.timer = setTimeout(async () => {
+        copyPressState.fired = true;
+        const copied = await copyTextToClipboard(copyPressState.text);
+        showCopyToast(copied ? 'Message copied' : 'Copy failed');
+      }, 550);
+    });
+
+    logEl.addEventListener('pointermove', (event) => {
+      if (!copyPressState.timer) {
+        return;
+      }
+      if (Math.abs(event.clientX - copyPressState.startX) > 12 || Math.abs(event.clientY - copyPressState.startY) > 12) {
+        clearCopyPressState();
+      }
+    });
+
+    logEl.addEventListener('pointerup', clearCopyPressState);
+    logEl.addEventListener('pointerleave', clearCopyPressState);
+    logEl.addEventListener('pointercancel', clearCopyPressState);
+
+    logEl.addEventListener('contextmenu', async (event) => {
+      const bubble = event.target instanceof Element ? event.target.closest('.bubble') : null;
+      if (!bubble) {
+        return;
+      }
+      event.preventDefault();
+      const copied = await copyTextToClipboard(bubble.dataset.copyText || '');
+      showCopyToast(copied ? 'Message copied' : 'Copy failed');
+    });
+
+    logEl.addEventListener('click', (event) => {
+      if (!copyPressState.fired) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      copyPressState.fired = false;
+    }, true);
 
     jumpLatestBtnEl.addEventListener('click', () => {
       resetAutoScrollState(false);
@@ -3261,52 +3413,62 @@ ${row.error}` : '']
       try {
         ensureSaveDateDefaults();
         const state = await fetchState();
-        codexVersionMarker = getCodexVersionCheckMarker(state.auth);
-        try {
-          await fetchCodexVersionStatus(true);
-          persistCodexVersionCache();
-        } catch (err) {
-          codexVersionLoaded = true;
-          codexVersionState = {
-            currentVersion: null,
-            latestVersion: null,
-            updateAvailable: false,
-            checkedAt: new Date().toISOString(),
-            error: String(err)
-          };
-          codexUpdateState = {
-            ...codexUpdateState,
-            running: false,
-            success: false,
-            error: String(err)
-          };
-          renderCodexVersionPanel();
-          persistCodexVersionCache();
-        }
-
-        claudeVersionMarker = getClaudeVersionCheckMarker(state.auth);
-        try {
-          await fetchClaudeVersionStatus(true);
-          persistClaudeVersionCache();
-        } catch (err) {
-          claudeVersionLoaded = true;
-          claudeVersionState = {
-            currentVersion: null,
-            latestVersion: null,
-            updateAvailable: false,
-            checkedAt: new Date().toISOString(),
-            error: String(err)
-          };
-          claudeUpdateState = {
-            ...claudeUpdateState,
-            running: false,
-            success: false,
-            error: String(err)
-          };
-          renderClaudeVersionPanel();
-          persistClaudeVersionCache();
-        }
+        await refreshCurrentSessionHistory();
         showApp();
+        if (!ENABLE_VERSION_CHECKS) {
+          return;
+        }
+        setTimeout(() => {
+          codexVersionMarker = getCodexVersionCheckMarker(state.auth);
+          void (async () => {
+            try {
+              await fetchCodexVersionStatus(true);
+              persistCodexVersionCache();
+            } catch (err) {
+              codexVersionLoaded = true;
+              codexVersionState = {
+                currentVersion: null,
+                latestVersion: null,
+                updateAvailable: false,
+                checkedAt: new Date().toISOString(),
+                error: String(err)
+              };
+              codexUpdateState = {
+                ...codexUpdateState,
+                running: false,
+                success: false,
+                error: String(err)
+              };
+              renderCodexVersionPanel();
+              persistCodexVersionCache();
+            }
+          })();
+
+          claudeVersionMarker = getClaudeVersionCheckMarker(state.auth);
+          void (async () => {
+            try {
+              await fetchClaudeVersionStatus(true);
+              persistClaudeVersionCache();
+            } catch (err) {
+              claudeVersionLoaded = true;
+              claudeVersionState = {
+                currentVersion: null,
+                latestVersion: null,
+                updateAvailable: false,
+                checkedAt: new Date().toISOString(),
+                error: String(err)
+              };
+              claudeUpdateState = {
+                ...claudeUpdateState,
+                running: false,
+                success: false,
+                error: String(err)
+              };
+              renderClaudeVersionPanel();
+              persistClaudeVersionCache();
+            }
+          })();
+        }, 600);
       } catch (err) {
         showAuth(String(err));
       }

@@ -391,11 +391,10 @@ export async function runLlmProcess(input: RunLlmProcessInput): Promise<RunLlmPr
     let completionHintAt: number | null = null;
     const progressIntervalMs = Math.max(1000, input.progressIntervalMs ?? 15000);
     const configuredInactivityTimeoutMs = Number.parseInt(process.env.LLM_INACTIVITY_TIMEOUT_MS ?? "", 10);
-    const inactivityTimeoutMs = Math.max(
-      1000,
+    const rawInactivityTimeoutMs =
       input.inactivityTimeoutMs ??
-        (Number.isFinite(configuredInactivityTimeoutMs) ? configuredInactivityTimeoutMs : 600000)
-    );
+      (Number.isFinite(configuredInactivityTimeoutMs) ? configuredInactivityTimeoutMs : 600000);
+    const inactivityTimeoutMs = rawInactivityTimeoutMs <= 0 ? 0 : Math.max(1000, rawInactivityTimeoutMs);
     const completionGraceMs = Math.max(5000, input.completionGraceMs ?? 15000);
     const progressTimer =
       input.onProgress
@@ -470,7 +469,7 @@ export async function runLlmProcess(input: RunLlmProcessInput): Promise<RunLlmPr
         return;
       }
 
-      if (idleMs < inactivityTimeoutMs) {
+      if (inactivityTimeoutMs <= 0 || idleMs < inactivityTimeoutMs) {
         return;
       }
 
