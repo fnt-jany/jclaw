@@ -177,6 +177,10 @@
       font-size: 12px;
     }
 
+    .compact-label {
+      display: none;
+    }
+
     .status {
       color: var(--muted);
       font-size: 13px;
@@ -763,6 +767,22 @@
         font-size: 14px;
       }
 
+      .brand-wrap {
+        flex-wrap: wrap;
+      }
+
+      .brand-action {
+        padding: 6px 8px;
+      }
+
+      .full-label {
+        display: none;
+      }
+
+      .compact-label {
+        display: inline;
+      }
+
       .status {
         font-size: 12px;
       }
@@ -996,7 +1016,7 @@
 
   <main id="app" class="app hidden">
     <section class="top">
-      <div class="brand-wrap"><div id="brand" class="brand">jclaw web</div><button id="serverLabelEditBtn" type="button" class="btn-muted brand-edit">Edit</button></div>
+      <div class="brand-wrap"><div id="brand" class="brand">jclaw web</div><button id="serverRestartBtn" type="button" class="btn-muted brand-edit brand-action"><span class="full-label">Restart Web</span><span class="compact-label">Restart</span></button><button id="serverLabelEditBtn" type="button" class="btn-muted brand-edit brand-action">Edit</button></div>
       <div class="top-actions">
         <div id="status" class="status">connecting...</div>
         <div class="tool-stack">
@@ -1081,6 +1101,7 @@
     const serverThemeModalEl = document.getElementById('serverThemeModal');
     const serverLabelInputEl = document.getElementById('serverLabelInput');
     const serverThemeSelectEl = document.getElementById('serverThemeSelect');
+    const serverRestartBtnEl = document.getElementById('serverRestartBtn');
     const serverThemeCancelBtnEl = document.getElementById('serverThemeCancelBtn');
     const serverThemeSaveBtnEl = document.getElementById('serverThemeSaveBtn');
 
@@ -1136,6 +1157,7 @@
     const faviconEl = document.querySelector('link[rel="icon"]');
     let serverLabel = 'local';
     let serverTheme = 'auto';
+    let webRestartPollTimer = null;
     let codexVersionLoaded = false;
     let codexVersionState = {
       currentVersion: null,
@@ -1700,6 +1722,33 @@
 
     function closeServerThemeModal() {
       serverThemeModalEl.classList.add('hidden');
+    }
+
+    function setServerRestartButtonState(restarting) {
+      serverRestartBtnEl.disabled = restarting;
+      if (restarting) {
+        serverRestartBtnEl.textContent = 'Restarting...';
+        return;
+      }
+      serverRestartBtnEl.innerHTML = '<span class="full-label">Restart Web</span><span class="compact-label">Restart</span>';
+    }
+
+    function startWebRestartReconnectLoop() {
+      if (webRestartPollTimer) {
+        clearInterval(webRestartPollTimer);
+      }
+
+      statusEl.textContent = 'web restart requested...\nreconnecting';
+      webRestartPollTimer = setInterval(async () => {
+        try {
+          await api('/api/auth/status', { method: 'GET', headers: {} });
+          clearInterval(webRestartPollTimer);
+          webRestartPollTimer = null;
+          window.location.reload();
+        } catch (_) {
+          // keep polling until the server is back
+        }
+      }, 1500);
     }
 
     function clearCodexUpdatePoll() {
@@ -3187,6 +3236,26 @@ ${truncateHistoryText(row.error)}` : '']
         applyServerLabel(data.serverLabel, data.serverTheme);
         closeServerThemeModal();
       } catch (err) {
+        appendBubble(String(err), 'err', currentSlot);
+      }
+    });
+
+    serverRestartBtnEl.addEventListener('click', async () => {
+      const confirmed = window.confirm('Restart jclaw-web? The web interface will disconnect briefly.');
+      if (!confirmed) {
+        return;
+      }
+
+      setServerRestartButtonState(true);
+      try {
+        await api('/api/server/restart', {
+          method: 'POST',
+          body: JSON.stringify({ confirm: 'restart jclaw-web' })
+        });
+        closeServerThemeModal();
+        startWebRestartReconnectLoop();
+      } catch (err) {
+        setServerRestartButtonState(false);
         appendBubble(String(err), 'err', currentSlot);
       }
     });

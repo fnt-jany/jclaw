@@ -1,9 +1,9 @@
-import dotenv from "dotenv";
 import path from "node:path";
 import { mkdir, readdir, stat, unlink, writeFile } from "node:fs/promises";
 import { Telegraf } from "telegraf";
 import type { Context } from "telegraf";
 import { loadConfig } from "../../core/config/env";
+import { loadDotenvIntoProcessEnv } from "../../core/config/loadDotenv";
 import { SessionStore } from "../../core/session/sessionStore";
 import { assertDirectoryExists, formatDirectoryListing, getEffectiveSessionWorkdir, resolveSessionCdTarget } from "../../core/session/workdir";
 import { cancelSessionRuns, runLlm } from "../../core/llm/execute";
@@ -22,7 +22,7 @@ import { LOG_COMMAND, SLOT_TARGET_HINT, TEXT } from "../../shared/constants";
 import { sessionSummary } from "../../shared/types";
 import { BUILD_TIME_ISO } from "../../generated/buildInfo";
 
-dotenv.config({ quiet: true });
+loadDotenvIntoProcessEnv({ override: true });
 
 const config = loadConfig(process.env);
 const dataDir = path.dirname(config.dataFile);
@@ -1341,6 +1341,4 @@ export async function startTelegramBot(): Promise<void> {
 if (require.main === module) {
   void startTelegramBot();
 }
-
-
 

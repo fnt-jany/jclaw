@@ -1,10 +1,10 @@
-import dotenv from "dotenv";
 import path from "node:path";
 import { loadConfig } from "../core/config/env";
+import { loadDotenvIntoProcessEnv } from "../core/config/loadDotenv";
 import { SessionStore } from "../core/session/sessionStore";
 import { SlotBindingService } from "../core/tools/slotBindingService";
 
-dotenv.config({ quiet: true });
+loadDotenvIntoProcessEnv({ override: true });
 
 const config = loadConfig(process.env);
 const dataDir = path.dirname(config.dataFile);

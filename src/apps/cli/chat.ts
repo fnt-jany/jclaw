@@ -1,8 +1,8 @@
-import dotenv from "dotenv";
 import path from "node:path";
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { loadConfig } from "../../core/config/env";
+import { loadDotenvIntoProcessEnv } from "../../core/config/loadDotenv";
 import { SessionStore, Session } from "../../core/session/sessionStore";
 import { assertDirectoryExists, formatDirectoryListing, getEffectiveSessionWorkdir, resolveSessionCdTarget } from "../../core/session/workdir";
 import { cancelSessionRuns, runLlm } from "../../core/llm/execute";
@@ -16,7 +16,7 @@ import { InteractionLogger } from "../../core/logging/interactionLogger";
 import { DEFAULT_LOCAL_CHAT_ID, LOG_COMMAND, SLOT_TARGET_HINT, TEXT } from "../../shared/constants";
 import { sessionSummary } from "../../shared/types";
 
-dotenv.config({ quiet: true });
+loadDotenvIntoProcessEnv({ override: true });
 
 const config = loadConfig(process.env);
 
@@ -463,7 +463,5 @@ export async function startCliChat(): Promise<void> {
 if (require.main === module) {
   void startCliChat();
 }
-
-
 
 

@@ -1,13 +1,13 @@
-import dotenv from "dotenv";
 import { readFile } from "node:fs/promises";
 import { loadConfig } from "../../core/config/env";
+import { loadDotenvIntoProcessEnv } from "../../core/config/loadDotenv";
 import { CronStore } from "../../core/cron/store";
 import { buildOneShotCron } from "../../core/cron/oneshot";
 import { notifyCronWorkerWake } from "../../core/cron/wakeup";
 import { SessionStore } from "../../core/session/sessionStore";
 import { DEFAULT_LOCAL_CHAT_ID, SLOT_TARGET_HINT, TEXT } from "../../shared/constants";
 
-dotenv.config({ quiet: true });
+loadDotenvIntoProcessEnv({ override: true });
 
 const config = loadConfig(process.env);
 const cronStore = new CronStore(config.dbFile);

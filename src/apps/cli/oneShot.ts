@@ -1,6 +1,6 @@
-import dotenv from "dotenv";
 import path from "node:path";
 import { loadConfig } from "../../core/config/env";
+import { loadDotenvIntoProcessEnv } from "../../core/config/loadDotenv";
 import { SessionStore } from "../../core/session/sessionStore";
 import { runLlm } from "../../core/llm/execute";
 import { resolveRunnerForSession } from "../../core/llm/router";
@@ -12,7 +12,7 @@ import { InteractionLogger } from "../../core/logging/interactionLogger";
 import { DEFAULT_LOCAL_CHAT_ID, SLOT_TARGET_HINT } from "../../shared/constants";
 import { sessionSummary } from "../../shared/types";
 
-dotenv.config({ quiet: true });
+loadDotenvIntoProcessEnv({ override: true });
 
 const config = loadConfig(process.env);
 
@@ -166,5 +166,3 @@ export async function startCliOneShot(): Promise<void> {
 if (require.main === module) {
   void startCliOneShot();
 }
-
-

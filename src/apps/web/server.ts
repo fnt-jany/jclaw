@@ -1,10 +1,10 @@
-import dotenv from "dotenv";
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { spawn } from "node:child_process";
 import { mkdir, readFile, readdir, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { loadConfig } from "../../core/config/env";
+import { loadDotenvIntoProcessEnv } from "../../core/config/loadDotenv";
 import { SessionStore, Session } from "../../core/session/sessionStore";
 import { assertDirectoryExists, formatDirectoryListing, getEffectiveSessionWorkdir, resolveSessionCdTarget } from "../../core/session/workdir";
 import { cancelSessionRuns, runLlm } from "../../core/llm/execute";
@@ -24,7 +24,7 @@ import { CommandResult, sessionSummary } from "../../shared/types";
 import { ChatJobStore, ChatJobRecord } from "../../core/chat/jobStore";
 import { sendTelegramTextNotification } from "../../core/telegram/notify";
 
-dotenv.config({ quiet: true });
+loadDotenvIntoProcessEnv({ override: true });
 
 const config = loadConfig(process.env);
 const dataDir = path.dirname(config.dataFile);
@@ -83,6 +83,10 @@ type ServerLabelUpdateRequest = {
   theme?: string;
 };
 
+type ServerRestartRequest = {
+  confirm?: string;
+};
+
 type CodexUpdateRequest = {
   killRunning?: boolean;
 };
@@ -95,6 +99,7 @@ type WebAuthSession = {
 };
 
 const WEB_CHAT_ID = process.env.WEB_CHAT_ID?.trim() || defaultChatId();
+const WEB_CHAT_ID_EXPLICIT = Boolean(process.env.WEB_CHAT_ID?.trim());
 const WEB_AUTH_COOKIE = "jclaw_web_auth";
 const WEB_SESSION_TTL_MS = 1000 * 60 * 60 * 12;
 const WEB_DEV_PASSWORD = process.env.WEB_DEV_PASSWORD ?? "3437";
@@ -130,7 +135,9 @@ const WEB_CHAT_RESUME_INCOMPLETE_JOBS = !["0", "false", "no", "off"].includes((p
 let activeJobWorkers = 0;
 let devPasswordFailedAttempts = 0;
 let devPasswordLocked = false;
+let webRestartInProgress = false;
 const NPM_COMMAND = process.platform === "win32" ? "npm.cmd" : "npm";
+const PM2_COMMAND = process.platform === "win32" ? "pm2.cmd" : "pm2";
 const CLAUDE_NPM_PACKAGE = "@anthropic-ai/claude-code";
 
 type CodexVersionSnapshot = {
@@ -1311,6 +1318,10 @@ function ensureAllowed(chatId: string): boolean {
   return config.allowedChatIds.size === 0 || config.allowedChatIds.has(chatId);
 }
 
+function ensureWebChannelAllowed(): boolean {
+  return WEB_CHAT_ID_EXPLICIT || ensureAllowed(WEB_CHAT_ID);
+}
+
 function getSessionNick(session: Session): string {
   return store.getSessionNickname(session.id);
 }
@@ -2227,7 +2238,7 @@ async function handleApiChat(req: IncomingMessage, res: ServerResponse): Promise
 
   const chatId = WEB_CHAT_ID;
 
-  if (!ensureAllowed(chatId)) {
+  if (!ensureWebChannelAllowed()) {
     json(res, 403, { error: "Access denied" });
     return;
   }
@@ -2374,7 +2385,7 @@ async function handleApiChatJobs(req: IncomingMessage, res: ServerResponse): Pro
     return;
   }
 
-  if (!ensureAllowed(chatId)) {
+  if (!ensureWebChannelAllowed()) {
     json(res, 403, { error: "Access denied" });
     return;
   }
@@ -2512,7 +2523,7 @@ async function handleApiState(req: IncomingMessage, res: ServerResponse): Promis
 
   const chatId = WEB_CHAT_ID;
 
-  if (!ensureAllowed(chatId)) {
+  if (!ensureWebChannelAllowed()) {
     json(res, 403, { error: "Access denied" });
     return;
   }
@@ -2553,7 +2564,7 @@ async function handleApiServerLabel(req: IncomingMessage, res: ServerResponse): 
   }
 
   const chatId = WEB_CHAT_ID;
-  if (!ensureAllowed(chatId)) {
+  if (!ensureWebChannelAllowed()) {
     json(res, 403, { error: "Access denied" });
     return;
   }
@@ -2566,6 +2577,61 @@ async function handleApiServerLabel(req: IncomingMessage, res: ServerResponse): 
   }
 }
 
+async function handleApiServerRestart(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const auth = requireAuth(req, res);
+  if (!auth) {
+    return;
+  }
+
+  let payload: ServerRestartRequest;
+  try {
+    payload = JSON.parse(await readBody(req)) as ServerRestartRequest;
+  } catch (err) {
+    json(res, 400, { error: String(err) });
+    return;
+  }
+
+  const confirm = String(payload.confirm ?? "").trim();
+  if (confirm !== "restart jclaw-web") {
+    json(res, 400, { error: 'confirm must be exactly "restart jclaw-web"' });
+    return;
+  }
+
+  if (webRestartInProgress) {
+    json(res, 409, { error: "Web restart already in progress." });
+    return;
+  }
+
+  webRestartInProgress = true;
+  const requestedAt = new Date().toISOString();
+
+  json(res, 202, {
+    ok: true,
+    scheduled: true,
+    requestedAt,
+    restartDelayMs: 1000
+  });
+
+  setTimeout(() => {
+    try {
+      const child = spawn(PM2_COMMAND, ["restart", "jclaw-web", "--update-env"], {
+        cwd: process.cwd(),
+        detached: true,
+        stdio: "ignore",
+        env: process.env
+      });
+      child.on("error", (err) => {
+        webRestartInProgress = false;
+        console.error("[jclaw-web] failed to run PM2 restart:", err);
+      });
+      child.unref();
+    } catch (err) {
+      webRestartInProgress = false;
+      console.error("[jclaw-web] failed to schedule PM2 restart:", err);
+    }
+  }, 1000);
+}
+
 async function handleApiCodexVersionStatus(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const auth = requireAuth(req, res);
   if (!auth) {
@@ -2573,7 +2639,7 @@ async function handleApiCodexVersionStatus(req: IncomingMessage, res: ServerResp
   }
 
   const chatId = WEB_CHAT_ID;
-  if (!ensureAllowed(chatId)) {
+  if (!ensureWebChannelAllowed()) {
     json(res, 403, { error: "Access denied" });
     return;
   }
@@ -2609,7 +2675,7 @@ async function handleApiCodexUpdateStatus(req: IncomingMessage, res: ServerRespo
   }
 
   const chatId = WEB_CHAT_ID;
-  if (!ensureAllowed(chatId)) {
+  if (!ensureWebChannelAllowed()) {
     json(res, 403, { error: "Access denied" });
     return;
   }
@@ -2627,7 +2693,7 @@ async function handleApiCodexUpdate(req: IncomingMessage, res: ServerResponse): 
   }
 
   const chatId = WEB_CHAT_ID;
-  if (!ensureAllowed(chatId)) {
+  if (!ensureWebChannelAllowed()) {
     json(res, 403, { error: "Access denied" });
     return;
   }
@@ -2749,7 +2815,7 @@ async function handleApiClaudeVersionStatus(req: IncomingMessage, res: ServerRes
   }
 
   const chatId = WEB_CHAT_ID;
-  if (!ensureAllowed(chatId)) {
+  if (!ensureWebChannelAllowed()) {
     json(res, 403, { error: "Access denied" });
     return;
   }
@@ -2780,7 +2846,7 @@ async function handleApiClaudeUpdateStatus(req: IncomingMessage, res: ServerResp
   }
 
   const chatId = WEB_CHAT_ID;
-  if (!ensureAllowed(chatId)) {
+  if (!ensureWebChannelAllowed()) {
     json(res, 403, { error: "Access denied" });
     return;
   }
@@ -2798,7 +2864,7 @@ async function handleApiClaudeUpdate(req: IncomingMessage, res: ServerResponse):
   }
 
   const chatId = WEB_CHAT_ID;
-  if (!ensureAllowed(chatId)) {
+  if (!ensureWebChannelAllowed()) {
     json(res, 403, { error: "Access denied" });
     return;
   }
@@ -3010,7 +3076,7 @@ async function handleApiSessionHistory(req: IncomingMessage, res: ServerResponse
   const toDate = (url.searchParams.get("toDate") ?? "").trim();
 
   const chatId = WEB_CHAT_ID;
-  if (!ensureAllowed(chatId)) {
+  if (!ensureWebChannelAllowed()) {
     json(res, 403, { error: "Access denied" });
     return;
   }
@@ -3150,6 +3216,11 @@ export async function startWebServer(): Promise<void> {
       return;
     }
 
+    if (req.method === "POST" && pathname === "/api/server/restart") {
+      await handleApiServerRestart(req, res);
+      return;
+    }
+
     if (req.method === "GET" && pathname === "/api/codex/version-status") {
       await handleApiCodexVersionStatus(req, res);
       return;
@@ -3246,5 +3317,3 @@ export async function startWebServer(): Promise<void> {
 if (require.main === module) {
   void startWebServer();
 }
-
-

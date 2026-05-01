@@ -2,8 +2,8 @@ module.exports = {
   apps: [
     {
       name: 'jclaw-telegram',
-      cwd: 'C:/Project/jclaw',
-      script: 'C:/Program Files/nodejs/node.exe',
+      cwd: __dirname,
+      script: process.execPath,
       args: 'node_modules/tsx/dist/cli.mjs src/main/telegram.ts',
       exec_mode: 'fork',
       autorestart: true,

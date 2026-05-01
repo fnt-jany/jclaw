@@ -1,7 +1,7 @@
-import dotenv from "dotenv";
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
 import { loadConfig } from "../../core/config/env";
+import { loadDotenvIntoProcessEnv } from "../../core/config/loadDotenv";
 import { SessionStore } from "../../core/session/sessionStore";
 import { getEffectiveSessionWorkdir } from "../../core/session/workdir";
 import { runLlm } from "../../core/llm/execute";
@@ -16,7 +16,7 @@ import { CronJob, CronStore } from "../../core/cron/store";
 import { sendCronTelegramNotification } from "../../core/telegram/notify";
 import { getCronWakePort } from "../../core/cron/wakeup";
 
-dotenv.config({ path: path.resolve(__dirname, "../../../.env"), quiet: true });
+loadDotenvIntoProcessEnv({ path: path.resolve(__dirname, "../../../.env"), override: true });
 
 const config = loadConfig(process.env);
 const dataDir = path.dirname(config.dataFile);
@@ -353,4 +353,3 @@ export async function startCronWorker(): Promise<void> {
 if (require.main === module) {
   void startCronWorker();
 }
-

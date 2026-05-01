@@ -1,12 +1,12 @@
-import dotenv from "dotenv";
 import path from "node:path";
 import { startTelegramBot } from "../apps/telegram/bot";
 import { loadConfig } from "../core/config/env";
+import { loadDotenvIntoProcessEnv } from "../core/config/loadDotenv";
 import { appendTelegramCrashLogSync } from "../core/logging/telegramCrashLog";
 import { acquireProcessLock } from "../core/runtime/processLock";
 import { BUILD_TIME_ISO } from "../generated/buildInfo";
 
-dotenv.config({ quiet: true });
+loadDotenvIntoProcessEnv({ override: true });
 
 const config = loadConfig(process.env);
 const dataDir = path.dirname(config.dataFile);
