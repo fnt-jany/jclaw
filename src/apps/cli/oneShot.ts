@@ -5,6 +5,7 @@ import { SessionStore } from "../../core/session/sessionStore";
 import { runLlm } from "../../core/llm/execute";
 import { resolveRunnerForSession } from "../../core/llm/router";
 import { applyPlanModePrompt } from "../../core/llm/promptMode";
+import { resolveReasoningEffort } from "../../core/llm/reasoning";
 import { resolveCodexCommand } from "../../core/commands/codexResolver";
 import { resolveGeminiRunner } from "../../core/commands/geminiResolver";
 import { resolveClaudeRunner } from "../../core/commands/claudeResolver";
@@ -106,7 +107,7 @@ export async function startCliOneShot(): Promise<void> {
     timeoutMs: config.codexTimeoutMs,
     workdir: config.codexWorkdir,
     codexNodeOptions: config.codexNodeOptions,
-    reasoningEffort: store.getReasoningEffort(session.id),
+    reasoningEffort: resolveReasoningEffort(store.getReasoningEffort(session.id), parsed.prompt),
     provider: runner.provider,
     modelOverride: store.getSessionModelOverride(session.id)
   });

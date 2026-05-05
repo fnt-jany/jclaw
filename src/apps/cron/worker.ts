@@ -8,6 +8,7 @@ import { runLlm } from "../../core/llm/execute";
 import { resolveRunnerForSession } from "../../core/llm/router";
 import { resolveLlmProviderForSession } from "../../core/llm/registry";
 import { applyPlanModePrompt } from "../../core/llm/promptMode";
+import { resolveReasoningEffort } from "../../core/llm/reasoning";
 import { resolveCodexCommand } from "../../core/commands/codexResolver";
 import { resolveGeminiRunner } from "../../core/commands/geminiResolver";
 import { resolveClaudeRunner } from "../../core/commands/claudeResolver";
@@ -233,7 +234,7 @@ async function executeJob(jobId: string): Promise<void> {
       timeoutMs: config.codexTimeoutMs,
       workdir: getEffectiveSessionWorkdir(sessionStore, session.id, config.codexWorkdir),
       codexNodeOptions: config.codexNodeOptions,
-      reasoningEffort: sessionStore.getReasoningEffort(session.id),
+      reasoningEffort: resolveReasoningEffort(sessionStore.getReasoningEffort(session.id), job.prompt),
       provider: runner.provider,
       modelOverride: sessionStore.getSessionModelOverride(session.id),
       onStdoutChunk: (chunk) => logChunk("stdout", chunk),

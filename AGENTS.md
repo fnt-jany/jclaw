@@ -10,6 +10,9 @@
 - Prefer shared logic in `src/core/**` over copying behavior into each channel.
 - Session state lives in the database, not in ad hoc files.
 
+## Response Style
+- Keep answers short and state the conclusion first.
+
 ## Key Data
 - Main DB: `data/jclaw.db`
 - Session state and preferences:

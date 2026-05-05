@@ -20,6 +20,7 @@ export type RunLlmProcessInput = {
   progressIntervalMs?: number;
   onProgress?: (progress: { elapsedMs: number; stdoutChars: number; stderrChars: number }) => void;
   inactivityTimeoutMs?: number;
+  completionGraceMs?: number;
 };
 
 export type RunLlmProcessResult = {
@@ -397,6 +398,7 @@ export async function runLlmProcess(input: RunLlmProcessInput): Promise<RunLlmPr
       input.inactivityTimeoutMs ??
       (Number.isFinite(configuredInactivityTimeoutMs) ? configuredInactivityTimeoutMs : 600000);
     const inactivityTimeoutMs = rawInactivityTimeoutMs <= 0 ? 0 : Math.max(1000, rawInactivityTimeoutMs);
+    const completionGraceMs = Math.max(5000, input.completionGraceMs ?? 15000);
     const progressTimer =
       input.onProgress
         ? setInterval(() => {
@@ -450,6 +452,25 @@ export async function runLlmProcess(input: RunLlmProcessInput): Promise<RunLlmPr
       const now = Date.now();
       const lastAt = lastActivityAt ?? started;
       const idleMs = now - lastAt;
+
+      if (completionHintAt && getResolvedOutput().trim() && idleMs >= completionGraceMs) {
+        settled = true;
+        clearTimeout(timer);
+        if (progressTimer) {
+          clearInterval(progressTimer);
+        }
+        clearInterval(inactivityTimer);
+        child.kill();
+
+        resolve({
+          output: getResolvedOutput(),
+          error: null,
+          exitCode: 0,
+          durationMs: Date.now() - started,
+          threadId: extractCodexSessionId(stdout, stderr)
+        });
+        return;
+      }
 
       if (inactivityTimeoutMs <= 0 || idleMs < inactivityTimeoutMs) {
         return;

@@ -9,6 +9,7 @@ import { cancelSessionRuns, runLlm } from "../../core/llm/execute";
 import { resolveRunnerForSession } from "../../core/llm/router";
 import { formatAllModelCatalogs, formatModelCatalog, hasModelCatalog } from "../../core/llm/modelCatalog";
 import { applyPlanModePrompt } from "../../core/llm/promptMode";
+import { resolveReasoningEffort } from "../../core/llm/reasoning";
 import { resolveCodexCommand } from "../../core/commands/codexResolver";
 import { resolveGeminiRunner } from "../../core/commands/geminiResolver";
 import { resolveClaudeRunner } from "../../core/commands/claudeResolver";
@@ -114,7 +115,7 @@ async function runPrompt(
     timeoutMs: config.codexTimeoutMs,
     workdir: getEffectiveSessionWorkdir(store, session.id, config.codexWorkdir),
     codexNodeOptions: config.codexNodeOptions,
-    reasoningEffort: store.getReasoningEffort(session.id),
+    reasoningEffort: resolveReasoningEffort(store.getReasoningEffort(session.id), prompt),
     provider: runner.provider,
     modelOverride: store.getSessionModelOverride(session.id)
   });

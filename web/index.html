@@ -2797,12 +2797,12 @@ ${truncateHistoryText(row.error)}` : '']
             return data.result;
           }
         } catch (err) {
-          if (Date.now() - startedAt >= 1000 * 60 * 35) {
+          if (Date.now() - startedAt >= 1000 * 60 * 65) {
             throw err;
           }
         }
 
-        if (Date.now() - startedAt >= 1000 * 60 * 35) {
+        if (Date.now() - startedAt >= 1000 * 60 * 65) {
           throw new Error('job polling timeout');
         }
 
@@ -2836,7 +2836,7 @@ ${truncateHistoryText(row.error)}` : '']
           settled = true;
           closeStream();
           reject(new Error('job stream timeout'));
-        }, 1000 * 60 * 35);
+        }, 1000 * 60 * 65);
 
         function closeStream() {
           if (streamClosed) {
