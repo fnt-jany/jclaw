@@ -2615,11 +2615,17 @@ async function handleApiServerRestart(req: IncomingMessage, res: ServerResponse)
 
   setTimeout(() => {
     try {
-      const child = spawn(PM2_COMMAND, ["restart", "jclaw-web", "--update-env"], {
+      const restartCommand = process.platform === "win32" ? "cmd.exe" : PM2_COMMAND;
+      const restartArgs =
+        process.platform === "win32"
+          ? ["/d", "/s", "/c", PM2_COMMAND, "restart", "jclaw-web", "--update-env"]
+          : ["restart", "jclaw-web", "--update-env"];
+      const child = spawn(restartCommand, restartArgs, {
         cwd: process.cwd(),
         detached: true,
         stdio: "ignore",
-        env: process.env
+        env: process.env,
+        windowsHide: true
       });
       child.on("error", (err) => {
         webRestartInProgress = false;
