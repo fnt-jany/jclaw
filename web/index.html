@@ -2192,7 +2192,17 @@ ${truncateHistoryText(row.error)}` : '']
       appEl.classList.add('hidden');
     }
 
-    function applyDevLoginLockState(locked) {
+    function applyDevLoginState(enabled, locked) {
+      const isEnabled = Boolean(enabled);
+      devLoginFormEl.classList.toggle('hidden', !isEnabled);
+      if (!isEnabled) {
+        devPasswordEl.disabled = true;
+        if (devLoginSubmitEl) {
+          devLoginSubmitEl.disabled = true;
+        }
+        return;
+      }
+
       const isLocked = Boolean(locked);
       devPasswordEl.disabled = isLocked;
       if (devLoginSubmitEl) {
@@ -3032,7 +3042,7 @@ ${truncateHistoryText(row.error)}` : '']
           }
 
           if (res.status === 423) {
-            applyDevLoginLockState(true);
+            applyDevLoginState(true, true);
           }
           return;
         }
@@ -3564,7 +3574,11 @@ ${truncateHistoryText(row.error)}` : '']
           return;
         }
         setupGoogleLogin(status);
-        applyDevLoginLockState(status.devPasswordLocked);
+        applyDevLoginState(status.devPasswordEnabled, status.devPasswordLocked);
+        if (!status.googleEnabled && !status.devPasswordEnabled) {
+          showAuth('No login method is configured.');
+          return;
+        }
         if (status.devPasswordLocked) {
           showAuth('Developer login is locked after 3 failed attempts. Restart server to unlock.');
           return;

@@ -1,3 +1,4 @@
+import https from "node:https";
 import type { CronJob } from "../cron/store";
 
 type CronNotifyInput = {
@@ -69,6 +70,48 @@ function formatMessage(input: CronNotifyInput): string {
   return formatVerbose(input);
 }
 
+async function postTelegramJson(botToken: string, method: string, body: unknown): Promise<void> {
+  const payload = JSON.stringify(body);
+  const url = new URL(`https://api.telegram.org/bot${botToken}/${method}`);
+
+  await new Promise<void>((resolve, reject) => {
+    const req = https.request(
+      url,
+      {
+        method: "POST",
+        family: 4,
+        timeout: 15000,
+        headers: {
+          "content-type": "application/json",
+          "content-length": Buffer.byteLength(payload)
+        }
+      },
+      (res) => {
+        let responseBody = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => {
+          responseBody += chunk;
+        });
+        res.on("end", () => {
+          const statusCode = res.statusCode ?? 0;
+          if (statusCode >= 200 && statusCode < 300) {
+            resolve();
+            return;
+          }
+          reject(new Error(`Telegram notify failed (${statusCode}): ${responseBody}`));
+        });
+      }
+    );
+
+    req.on("timeout", () => {
+      req.destroy(new Error("Telegram notify timed out"));
+    });
+    req.on("error", reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
 export async function sendCronTelegramNotification(input: CronNotifyInput): Promise<void> {
   if (!input.botToken.trim()) {
     return;
@@ -79,16 +122,7 @@ export async function sendCronTelegramNotification(input: CronNotifyInput): Prom
     text: formatMessage(input)
   };
 
-  const response = await fetch(`https://api.telegram.org/bot${input.botToken}/sendMessage`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body)
-  });
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Telegram notify failed (${response.status}): ${text}`);
-  }
+  await postTelegramJson(input.botToken, "sendMessage", body);
 }
 
 
@@ -104,17 +138,8 @@ export async function sendTelegramTextNotification(input: TelegramTextInput): Pr
     return;
   }
 
-  const response = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      chat_id: input.chatId,
-      text: input.text
-    })
+  await postTelegramJson(botToken, "sendMessage", {
+    chat_id: input.chatId,
+    text: input.text
   });
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Telegram notify failed (${response.status}): ${text}`);
-  }
 }

@@ -103,7 +103,8 @@ const WEB_CHAT_ID = process.env.WEB_CHAT_ID?.trim() || defaultChatId();
 const WEB_CHAT_ID_EXPLICIT = Boolean(process.env.WEB_CHAT_ID?.trim());
 const WEB_AUTH_COOKIE = "jclaw_web_auth";
 const WEB_SESSION_TTL_MS = 1000 * 60 * 60 * 12;
-const WEB_DEV_PASSWORD = process.env.WEB_DEV_PASSWORD ?? "3437";
+const WEB_DEV_PASSWORD = (process.env.WEB_DEV_PASSWORD ?? "").trim();
+const WEB_DEV_PASSWORD_ENABLED = Boolean(WEB_DEV_PASSWORD);
 const WEB_DEV_MAX_FAILED_ATTEMPTS = 3;
 const WEB_GOOGLE_CLIENT_ID = (process.env.WEB_GOOGLE_CLIENT_ID ?? "").trim();
 const WEB_AUTH_COOKIE_SAMESITE = (process.env.WEB_AUTH_COOKIE_SAMESITE ?? "Lax").trim();
@@ -2944,7 +2945,7 @@ async function handleApiAuthStatus(req: IncomingMessage, res: ServerResponse): P
     method: session?.method ?? null,
     googleClientId: WEB_GOOGLE_CLIENT_ID || null,
     googleEnabled: Boolean(WEB_GOOGLE_CLIENT_ID),
-    devPasswordEnabled: true,
+    devPasswordEnabled: WEB_DEV_PASSWORD_ENABLED,
     devPasswordLocked,
     devPasswordFailedAttempts,
     devPasswordRemainingAttempts: Math.max(0, WEB_DEV_MAX_FAILED_ATTEMPTS - devPasswordFailedAttempts),
@@ -3017,6 +3018,11 @@ async function notifyDevLoginLocked(req: IncomingMessage): Promise<void> {
 }
 
 async function handleApiAuthDev(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (!WEB_DEV_PASSWORD_ENABLED) {
+    json(res, 403, { error: "Developer login is not configured." });
+    return;
+  }
+
   if (devPasswordLocked) {
     json(res, 423, { error: "Developer login is locked. Restart server to unlock." });
     return;
