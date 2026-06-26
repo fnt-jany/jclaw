@@ -103,6 +103,37 @@ function extractCodexSessionId(stdout: string, stderr: string): string | null {
   return match?.[1] ?? null;
 }
 
+function extractClaudeSessionId(stdout: string, stderr: string): string | null {
+  const joined = `${stdout}\n${stderr}`;
+
+  for (const line of joined.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{")) {
+      continue;
+    }
+
+    try {
+      const parsed = JSON.parse(trimmed) as { session_id?: unknown; sessionId?: unknown };
+      const sessionId = typeof parsed.session_id === "string" ? parsed.session_id : parsed.sessionId;
+      if (typeof sessionId === "string" && sessionId.trim()) {
+        return sessionId.trim();
+      }
+    } catch {
+      // Ignore non-Claude JSON fragments.
+    }
+  }
+
+  const match = joined.match(/"session[_-]?id"\s*:\s*"([^"]+)"/i);
+  return match?.[1] ?? null;
+}
+
+function extractThreadId(provider: LlmProviderId, stdout: string, stderr: string): string | null {
+  if (provider === "claude") {
+    return extractClaudeSessionId(stdout, stderr);
+  }
+  return extractCodexSessionId(stdout, stderr);
+}
+
 function extractCodexAssistantText(stderr: string): string | null {
   const trimmed = stderr.trim();
   if (!trimmed) {
@@ -119,6 +150,20 @@ function extractCodexAssistantText(stderr: string): string | null {
   const tokensUsedIndex = afterCodex.search(/\ntokens used\b/i);
   const body = (tokensUsedIndex >= 0 ? afterCodex.slice(0, tokensUsedIndex) : afterCodex).trim();
   return body || null;
+}
+
+function extractClaudeAssistantText(stdout: string): string | null {
+  const trimmed = stdout.trim();
+  if (!trimmed.startsWith("{")) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as { result?: unknown };
+    return typeof parsed.result === "string" ? parsed.result : null;
+  } catch {
+    return null;
+  }
 }
 
 function parseGeminiSessions(listOutput: string): GeminiSessionRow[] {
@@ -174,6 +219,10 @@ function prependAfterCommandPrefix(args: string[], prepend: string[]): string[] 
     idx += 1;
   }
   return [...args.slice(0, idx), ...prepend, ...args.slice(idx)];
+}
+
+function hasArgOption(args: string[], longName: string, shortName?: string): boolean {
+  return args.some((arg) => arg === longName || arg.startsWith(`${longName}=`) || (shortName ? arg === shortName : false));
 }
 
 function buildGeminiListArgs(argsTemplate: string): string[] {
@@ -297,7 +346,7 @@ async function getLatestGeminiSessionId(input: RunLlmProcessInput, tag: string |
 function buildArgs(input: RunLlmProcessInput, prompt: string): { args: string[]; stdinPrompt: string | null } {
   const provider = input.provider ?? "codex";
   const resolvedThreadId = input.threadId ?? null;
-  const promptReplacement = provider === "codex" ? PROMPT_ARG_TOKEN : prompt;
+  const promptReplacement = provider === "codex" || provider === "claude" ? PROMPT_ARG_TOKEN : prompt;
   const reasoningArgs =
     input.reasoningEffort && input.reasoningEffort !== "none"
       ? ["-c", `model_reasoning_effort=\"${input.reasoningEffort}\"`]
@@ -317,14 +366,14 @@ function buildArgs(input: RunLlmProcessInput, prompt: string): { args: string[];
     }
 
     if (provider === "codex") {
-      if (args.includes("-m") || args.includes("--model")) {
+      if (hasArgOption(args, "--model", "-m")) {
         return args;
       }
       return ["-m", modelOverride, ...args];
     }
 
     if (provider === "claude" || provider === "gemini") {
-      if (args.includes("-m") || args.includes("--model")) {
+      if (hasArgOption(args, "--model", "-m")) {
         return args;
       }
       return [...args, "--model", modelOverride];
@@ -342,6 +391,17 @@ function buildArgs(input: RunLlmProcessInput, prompt: string): { args: string[];
     const next = [...args];
     next[targetIndex] = "-";
     return { args: applyModelOverride(next), stdinPrompt: prompt };
+  };
+
+  const finalizeClaudeArgs = (args: string[]): { args: string[]; stdinPrompt: string | null } => {
+    const targetIndex = args.lastIndexOf(PROMPT_ARG_TOKEN);
+    const next = targetIndex >= 0 ? args.filter((_, index) => index !== targetIndex) : [...args];
+
+    if (!hasArgOption(next, "--output-format")) {
+      next.push("--output-format", "json");
+    }
+
+    return { args: applyModelOverride(next), stdinPrompt: targetIndex >= 0 ? prompt : null };
   };
 
   if (provider === "gemini") {
@@ -366,6 +426,16 @@ function buildArgs(input: RunLlmProcessInput, prompt: string): { args: string[];
     return finalizeCodexArgs(parsed);
   }
 
+  if (provider === "claude") {
+    const hasResume =
+      hasArgOption(parsed, "--resume", "-r") ||
+      hasArgOption(parsed, "--continue", "-c") ||
+      hasArgOption(parsed, "--session-id") ||
+      hasArgOption(parsed, "--no-session-persistence");
+    const resumeArgs = resolvedThreadId && !hasResume ? prependAfterCommandPrefix(parsed, ["--resume", resolvedThreadId]) : parsed;
+    return finalizeClaudeArgs(resumeArgs);
+  }
+
   return { args: applyModelOverride(parsed), stdinPrompt: null };
 }
 
@@ -386,6 +456,8 @@ export async function runLlmProcess(input: RunLlmProcessInput): Promise<RunLlmPr
     const getResolvedOutput = (): string =>
       provider === "codex" && !stdout.trim()
         ? extractCodexAssistantText(stderr) ?? stdout
+        : provider === "claude"
+          ? extractClaudeAssistantText(stdout) ?? stdout
         : stdout;
     let settled = false;
     let lastActivityAt: number | null = null;
@@ -467,7 +539,7 @@ export async function runLlmProcess(input: RunLlmProcessInput): Promise<RunLlmPr
           error: null,
           exitCode: 0,
           durationMs: Date.now() - started,
-          threadId: extractCodexSessionId(stdout, stderr)
+          threadId: extractThreadId(provider, stdout, stderr)
         });
         return;
       }
@@ -501,7 +573,7 @@ export async function runLlmProcess(input: RunLlmProcessInput): Promise<RunLlmPr
             (stderr ? `\n${stderr}` : ""),
           exitCode: null,
           durationMs: Date.now() - started,
-          threadId: extractCodexSessionId(stdout, stderr)
+          threadId: extractThreadId(provider, stdout, stderr)
         });
       })();
     }, 1000);
@@ -534,7 +606,7 @@ export async function runLlmProcess(input: RunLlmProcessInput): Promise<RunLlmPr
               (stderr ? `\n${stderr}` : ""),
             exitCode: null,
             durationMs: Date.now() - started,
-            threadId: extractCodexSessionId(stdout, stderr)
+            threadId: extractThreadId(provider, stdout, stderr)
           });
         })();
       }
@@ -577,7 +649,7 @@ export async function runLlmProcess(input: RunLlmProcessInput): Promise<RunLlmPr
           error: `Failed to execute command: ${err.message}`,
           exitCode: null,
           durationMs: Date.now() - started,
-          threadId: extractCodexSessionId(stdout, stderr)
+          threadId: extractThreadId(provider, stdout, stderr)
         });
       }
     });
@@ -595,7 +667,7 @@ export async function runLlmProcess(input: RunLlmProcessInput): Promise<RunLlmPr
         const errorText = code === 0 ? null : (trimmedStderr.length ? trimmedStderr : null);
 
         void (async () => {
-          let sessionId = extractCodexSessionId(stdout, stderr);
+          let sessionId = extractThreadId(provider, stdout, stderr);
 
           if (provider === "gemini" && code === 0) {
             if (resolvedThreadId) {
@@ -620,7 +692,6 @@ export async function runLlmProcess(input: RunLlmProcessInput): Promise<RunLlmPr
     });
   });
 }
-
 
 
 
