@@ -6,6 +6,7 @@
   "scripts": {
     "test": "npm run build",
     "build": "npm run -s clean && tsc -p tsconfig.json",
+    "all": "npm run -s build && node scripts/pm2-run-all.cjs",
     "start": "node dist/main/telegram.js",
     "dev": "tsx src/main/telegram.ts",
     "cli": "tsx src/main/cli.ts",

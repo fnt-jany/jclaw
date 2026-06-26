@@ -94,6 +94,14 @@ function usage(): void {
   );
 }
 
+async function notifyWakeOrWarn(reason: string): Promise<void> {
+  try {
+    await notifyCronWorkerWake(reason);
+  } catch (err) {
+    console.warn(`Cron worker wake failed: ${String(err)}`);
+  }
+}
+
 export async function startCronCli(): Promise<void> {
   await cronStore.init();
   await sessionStore.init();
@@ -164,6 +172,12 @@ export async function startCronCli(): Promise<void> {
 
     console.log(`Created job ${job.id}`);
     console.log(`next=${job.nextRunAt}`);
+    try {
+      await notifyCronWorkerWake(`cli cron add ${job.id}`);
+    } catch (err) {
+      await cronStore.remove(job.id);
+      throw new Error(`Cron worker wake failed; removed ${job.id}: ${String(err)}`);
+    }
     return;
   }
 
@@ -200,6 +214,12 @@ export async function startCronCli(): Promise<void> {
     console.log(`Created one-shot ${job.id}`);
     console.log(`runAt=${oneShot.runAt.toISOString()}`);
     console.log(`next=${job.nextRunAt}`);
+    try {
+      await notifyCronWorkerWake(`cli cron once ${job.id}`);
+    } catch (err) {
+      await cronStore.remove(job.id);
+      throw new Error(`Cron worker wake failed; removed ${job.id}: ${String(err)}`);
+    }
     return;
   }
 
@@ -212,24 +232,34 @@ export async function startCronCli(): Promise<void> {
 
   if (parsed.cmd === "remove") {
     const ok = await cronStore.remove(id);
+    if (ok) {
+      await notifyWakeOrWarn(`cli cron remove ${id}`);
+    }
     console.log(ok ? `Removed ${id}` : `Not found: ${id}`);
     return;
   }
 
   if (parsed.cmd === "enable") {
     const job = await cronStore.setEnabled(id, true);
+    if (!job) {
+      console.log(`Not found: ${id}`);
+      return;
+    }
     try {
       await notifyCronWorkerWake(`cli cron enable ${id}`);
     } catch (err) {
       await cronStore.setEnabled(id, false);
       throw new Error(`Cron worker wake failed: ${String(err)}`);
     }
-    console.log(job ? `Enabled ${id}` : `Not found: ${id}`);
+    console.log(`Enabled ${id}`);
     return;
   }
 
   if (parsed.cmd === "disable") {
     const job = await cronStore.setEnabled(id, false);
+    if (job) {
+      await notifyWakeOrWarn(`cli cron disable ${id}`);
+    }
     console.log(job ? `Disabled ${id}` : `Not found: ${id}`);
     return;
   }
