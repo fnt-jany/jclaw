@@ -544,6 +544,12 @@
       font-size: 12px;
     }
 
+    .attachment-chip.error {
+      border-color: #f1b7b7;
+      background: #fff4f4;
+      color: #a33a3a;
+    }
+
     .attachment-chip-name {
       max-width: 120px;
       overflow: hidden;
@@ -1212,6 +1218,8 @@
     const hydratingSlots = new Map();
     const sessionInputState = new Map();
     let pendingAttachments = [];
+    const WEB_UPLOAD_MAX_BYTES = 50 * 1024 * 1024;
+    const WEB_UPLOAD_MAX_LABEL = '50MiB';
     let copyToastTimer = null;
     const activeJobStreams = new Map();
     const pendingBubbleByJob = new Map();
@@ -1435,7 +1443,9 @@
         } else if (item.status === 'ready') {
           status.textContent = 'ready';
         } else if (item.status === 'error') {
-          status.textContent = 'failed';
+          status.textContent = item.error || 'failed';
+          chip.classList.add('error');
+          chip.title = item.error || 'Upload failed.';
         } else {
           status.textContent = item.status;
         }
@@ -3122,6 +3132,12 @@ ${truncateHistoryText(row.error)}` : '']
         };
         pendingAttachments.push(item);
         renderPendingAttachments();
+        if (file.size > WEB_UPLOAD_MAX_BYTES) {
+          item.status = 'error';
+          item.error = `File too large (max ${WEB_UPLOAD_MAX_LABEL})`;
+          renderPendingAttachments();
+          continue;
+        }
         uploadAttachmentSelection(item, file);
       }
       fileInputEl.value = '';
