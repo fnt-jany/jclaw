@@ -443,6 +443,53 @@
       padding: 10px 12px;
       line-height: 1.45;
       font-size: 14px;
+      position: relative;
+    }
+
+    .bubble.with-copy {
+      padding-right: 44px;
+    }
+
+    .bubble-copy-btn {
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      width: 24px;
+      height: 24px;
+      min-width: 24px;
+      padding: 0;
+      border-radius: 8px;
+      border: 1px solid #d8d0c2;
+      background: rgba(255, 253, 247, 0.92);
+      color: #6b6358;
+      cursor: pointer;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    .bubble-copy-btn::before,
+    .bubble-copy-btn::after {
+      content: "";
+      position: absolute;
+      width: 9px;
+      height: 11px;
+      border: 1.5px solid currentColor;
+      border-radius: 2px;
+      background: rgba(255, 253, 247, 0.96);
+    }
+
+    .bubble-copy-btn::before {
+      top: 8px;
+      left: 7px;
+    }
+
+    .bubble-copy-btn::after {
+      top: 5px;
+      left: 10px;
+    }
+
+    .bubble-copy-btn:active {
+      transform: translateY(1px);
     }
 
     .bubble-body {
@@ -450,6 +497,131 @@
       overflow-wrap: anywhere;
       word-break: break-word;
     }
+
+    .bubble-body.markdown {
+      white-space: normal;
+    }
+
+    .bubble-body.markdown > :first-child {
+      margin-top: 0;
+    }
+
+    .bubble-body.markdown > :last-child {
+      margin-bottom: 0;
+    }
+
+    .bubble-body.markdown p,
+    .bubble-body.markdown ul,
+    .bubble-body.markdown ol,
+    .bubble-body.markdown blockquote,
+    .bubble-body.markdown pre,
+    .bubble-body.markdown .table-scroll {
+      margin: 0 0 0.7em;
+    }
+
+    .bubble-body.markdown h1,
+    .bubble-body.markdown h2,
+    .bubble-body.markdown h3,
+    .bubble-body.markdown h4,
+    .bubble-body.markdown h5,
+    .bubble-body.markdown h6 {
+      margin: 0.9em 0 0.45em;
+      line-height: 1.2;
+    }
+
+    .bubble-body.markdown h1 { font-size: 1.45em; }
+    .bubble-body.markdown h2 { font-size: 1.28em; }
+    .bubble-body.markdown h3 { font-size: 1.15em; }
+    .bubble-body.markdown h4,
+    .bubble-body.markdown h5,
+    .bubble-body.markdown h6 { font-size: 1.05em; }
+
+    .bubble-body.markdown ul,
+    .bubble-body.markdown ol {
+      padding-left: 1.4em;
+    }
+
+    .bubble-body.markdown li {
+      margin: 0.25em 0;
+    }
+
+    .bubble-body.markdown blockquote {
+      border-left: 3px solid #d6d0c3;
+      color: #5b5a55;
+      padding-left: 0.8em;
+    }
+
+    .bubble-body.markdown pre,
+    .bubble-body.markdown code {
+      border: 1px solid #e3ded3;
+      border-radius: 7px;
+      background: #fffaf0;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    .bubble-body.markdown code {
+      padding: 0.08em 0.35em;
+    }
+
+    .bubble-body.markdown pre {
+      padding: 0.75em;
+      overflow-x: auto;
+      white-space: pre;
+    }
+
+    .bubble-body.markdown pre code {
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      padding: 0;
+      white-space: inherit;
+    }
+
+    .bubble-body.markdown a {
+      color: #1f5f85;
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
+
+    .bubble-body.markdown hr {
+      border: 0;
+      border-top: 1px solid #e3ded3;
+      margin: 0.9em 0;
+    }
+
+    .bubble-body.markdown .table-scroll {
+      max-width: 100%;
+      overflow-x: auto;
+    }
+
+    .bubble-body.markdown table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.95em;
+      background: #fffdf7;
+      table-layout: auto;
+    }
+
+    .bubble-body.markdown th,
+    .bubble-body.markdown td {
+      border: 1px solid #e3ded3;
+      padding: 0.42em 0.62em;
+      text-align: left;
+      vertical-align: top;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .bubble-body.markdown th {
+      background: #f5efe2;
+      font-weight: 700;
+    }
+
+    .bubble-body.markdown tr:nth-child(even) td {
+      background: #fffaf0;
+    }
+
 
     .bubble-meta {
       font-size: 11px;
@@ -802,6 +974,20 @@
         overflow: auto;
         min-height: 0;
         overscroll-behavior: contain;
+      }
+
+      .bubble {
+        max-width: calc(100% - 10px);
+      }
+
+      .bubble-body.markdown pre {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+
+      .bubble-body.markdown table {
+        table-layout: fixed;
       }
 
       .tabs-wrap {
@@ -1379,6 +1565,248 @@
       logEl.scrollTop = logEl.scrollHeight;
     }
 
+    function appendInlineMarkdown(parent, text) {
+      const source = String(text ?? '');
+      const tokenRe = /(`[^`\n]+`|\*\*[^*\n]+?\*\*|\*[^*\n]+?\*|\[[^\]\n]+\]\([^) \n]+\))/g;
+      let lastIndex = 0;
+      let match;
+
+      while ((match = tokenRe.exec(source)) !== null) {
+        if (match.index > lastIndex) {
+          parent.appendChild(document.createTextNode(source.slice(lastIndex, match.index)));
+        }
+
+        const token = match[0];
+        if (token.startsWith('`')) {
+          const code = document.createElement('code');
+          code.textContent = token.slice(1, -1);
+          parent.appendChild(code);
+        } else if (token.startsWith('**')) {
+          const strong = document.createElement('strong');
+          appendInlineMarkdown(strong, token.slice(2, -2));
+          parent.appendChild(strong);
+        } else if (token.startsWith('*')) {
+          const em = document.createElement('em');
+          appendInlineMarkdown(em, token.slice(1, -1));
+          parent.appendChild(em);
+        } else {
+          const linkMatch = token.match(/^\[([^\]\n]+)\]\(([^) \n]+)\)$/);
+          const href = linkMatch ? linkMatch[2] : '';
+          if (href && /^(https?:\/\/|mailto:)/i.test(href)) {
+            const a = document.createElement('a');
+            a.href = href;
+            a.target = '_blank';
+            a.rel = 'noopener noreferrer';
+            a.textContent = linkMatch[1];
+            parent.appendChild(a);
+          } else {
+            parent.appendChild(document.createTextNode(token));
+          }
+        }
+        lastIndex = tokenRe.lastIndex;
+      }
+
+      if (lastIndex < source.length) {
+        parent.appendChild(document.createTextNode(source.slice(lastIndex)));
+      }
+    }
+
+    function isMarkdownBlockStart(line) {
+      return /^(#{1,6})\s+/.test(line)
+        || /^```/.test(line)
+        || /^-{3,}\s*$/.test(line)
+        || /^\s*([-*+])\s+/.test(line)
+        || /^\s*\d+\.\s+/.test(line)
+        || isMarkdownTableStart(line)
+        || /^>\s?/.test(line);
+    }
+
+    function splitMarkdownTableRow(line) {
+      const escapedPipe = '\u0000PIPE\u0000';
+      let value = String(line ?? '').replace(/\\\|/g, escapedPipe).trim();
+      if (value.startsWith('|')) {
+        value = value.slice(1);
+      }
+      if (value.endsWith('|')) {
+        value = value.slice(0, -1);
+      }
+      return value.split('|').map((cell) => cell.trim().replaceAll(escapedPipe, '|'));
+    }
+
+    function isMarkdownTableSeparator(line) {
+      const cells = splitMarkdownTableRow(line);
+      return cells.length > 1 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+    }
+
+    function isMarkdownTableStart(line, nextLine = '') {
+      if (!String(line ?? '').includes('|')) {
+        return false;
+      }
+      return isMarkdownTableSeparator(nextLine);
+    }
+
+    function appendMarkdownParagraph(parent, lines) {
+      const p = document.createElement('p');
+      appendInlineMarkdown(p, lines.join(' '));
+      parent.appendChild(p);
+    }
+
+    function appendMarkdownList(parent, lines, ordered) {
+      const list = document.createElement(ordered ? 'ol' : 'ul');
+      for (const line of lines) {
+        const li = document.createElement('li');
+        const itemText = line.replace(ordered ? /^\s*\d+\.\s+/ : /^\s*[-*+]\s+/, '');
+        appendInlineMarkdown(li, itemText);
+        list.appendChild(li);
+      }
+      parent.appendChild(list);
+    }
+
+    function appendMarkdownTable(parent, tableLines) {
+      const headerCells = splitMarkdownTableRow(tableLines[0]);
+      const alignCells = splitMarkdownTableRow(tableLines[1]);
+      const tableWrap = document.createElement('div');
+      tableWrap.className = 'table-scroll';
+      const table = document.createElement('table');
+      const thead = document.createElement('thead');
+      const headRow = document.createElement('tr');
+
+      for (let index = 0; index < headerCells.length; index += 1) {
+        const th = document.createElement('th');
+        const align = alignCells[index] || '';
+        if (/^:-+:$/.test(align)) {
+          th.style.textAlign = 'center';
+        } else if (/^-+:$/.test(align)) {
+          th.style.textAlign = 'right';
+        }
+        appendInlineMarkdown(th, headerCells[index]);
+        headRow.appendChild(th);
+      }
+
+      thead.appendChild(headRow);
+      table.appendChild(thead);
+
+      const tbody = document.createElement('tbody');
+      for (const line of tableLines.slice(2)) {
+        const cells = splitMarkdownTableRow(line);
+        const row = document.createElement('tr');
+        for (let index = 0; index < headerCells.length; index += 1) {
+          const td = document.createElement('td');
+          const align = alignCells[index] || '';
+          if (/^:-+:$/.test(align)) {
+            td.style.textAlign = 'center';
+          } else if (/^-+:$/.test(align)) {
+            td.style.textAlign = 'right';
+          }
+          appendInlineMarkdown(td, cells[index] || '');
+          row.appendChild(td);
+        }
+        tbody.appendChild(row);
+      }
+      table.appendChild(tbody);
+      tableWrap.appendChild(table);
+      parent.appendChild(tableWrap);
+    }
+
+    function renderMarkdown(parent, text) {
+      const lines = String(text ?? '').replace(/\r\n?/g, '\n').split('\n');
+      let i = 0;
+
+      while (i < lines.length) {
+        const line = lines[i];
+
+        if (!line.trim()) {
+          i += 1;
+          continue;
+        }
+
+        const fence = line.match(/^```(\S*)?\s*$/);
+        if (fence) {
+          i += 1;
+          const codeLines = [];
+          while (i < lines.length && !/^```\s*$/.test(lines[i])) {
+            codeLines.push(lines[i]);
+            i += 1;
+          }
+          if (i < lines.length) {
+            i += 1;
+          }
+          const pre = document.createElement('pre');
+          const code = document.createElement('code');
+          if (fence[1]) {
+            code.dataset.lang = fence[1];
+          }
+          code.textContent = codeLines.join('\n');
+          pre.appendChild(code);
+          parent.appendChild(pre);
+          continue;
+        }
+
+        if (isMarkdownTableStart(line, lines[i + 1] || '')) {
+          const tableLines = [line, lines[i + 1]];
+          i += 2;
+          while (i < lines.length && lines[i].trim() && lines[i].includes('|')) {
+            tableLines.push(lines[i]);
+            i += 1;
+          }
+          appendMarkdownTable(parent, tableLines);
+          continue;
+        }
+
+        const heading = line.match(/^(#{1,6})\s+(.+)$/);
+        if (heading) {
+          const h = document.createElement(`h${heading[1].length}`);
+          appendInlineMarkdown(h, heading[2].trim());
+          parent.appendChild(h);
+          i += 1;
+          continue;
+        }
+
+        if (/^-{3,}\s*$/.test(line)) {
+          parent.appendChild(document.createElement('hr'));
+          i += 1;
+          continue;
+        }
+
+        if (/^>\s?/.test(line)) {
+          const blockquote = document.createElement('blockquote');
+          const quoteLines = [];
+          while (i < lines.length && /^>\s?/.test(lines[i])) {
+            quoteLines.push(lines[i].replace(/^>\s?/, ''));
+            i += 1;
+          }
+          appendMarkdownParagraph(blockquote, quoteLines);
+          parent.appendChild(blockquote);
+          continue;
+        }
+
+        const unordered = /^\s*[-*+]\s+/.test(line);
+        const ordered = /^\s*\d+\.\s+/.test(line);
+        if (unordered || ordered) {
+          const listLines = [];
+          const listRe = ordered ? /^\s*\d+\.\s+/ : /^\s*[-*+]\s+/;
+          while (i < lines.length && listRe.test(lines[i])) {
+            listLines.push(lines[i]);
+            i += 1;
+          }
+          appendMarkdownList(parent, listLines, ordered);
+          continue;
+        }
+
+        const paragraphLines = [];
+        while (
+          i < lines.length
+          && lines[i].trim()
+          && !isMarkdownBlockStart(lines[i])
+          && !isMarkdownTableStart(lines[i], lines[i + 1] || '')
+        ) {
+          paragraphLines.push(lines[i]);
+          i += 1;
+        }
+        appendMarkdownParagraph(parent, paragraphLines);
+      }
+    }
+
     function updateJumpLatestButton() {
       const visible = autoScrollLocked || unseenMessageCount > 0;
       jumpLatestBtnEl.classList.toggle('show', visible);
@@ -1403,11 +1831,23 @@
         const wrap = document.createElement('div');
         wrap.className = `bubble-wrap ${row.type}`;
         const div = document.createElement('div');
-        div.className = `bubble ${row.type}`;
+        div.className = `bubble ${row.type}${row.type === 'bot' ? ' with-copy' : ''}`;
         div.dataset.copyText = row.text || '';
+        if (row.type === 'bot') {
+          const copyBtn = document.createElement('button');
+          copyBtn.type = 'button';
+          copyBtn.className = 'bubble-copy-btn';
+          copyBtn.setAttribute('aria-label', 'Copy full response');
+          copyBtn.setAttribute('title', 'Copy full response');
+          div.appendChild(copyBtn);
+        }
         const body = document.createElement('div');
-        body.className = 'bubble-body';
-        body.textContent = row.text;
+        body.className = `bubble-body ${row.type === 'bot' ? 'markdown' : ''}`.trim();
+        if (row.type === 'bot') {
+          renderMarkdown(body, row.text);
+        } else {
+          body.textContent = row.text;
+        }
         div.appendChild(body);
         const meta = row.timestamp ? document.createElement('div') : null;
         if (meta) {
@@ -3172,74 +3612,18 @@ ${truncateHistoryText(row.error)}` : '']
       updateJumpLatestButton();
     });
 
-    const copyPressState = {
-      timer: null,
-      startX: 0,
-      startY: 0,
-      text: '',
-      fired: false
-    };
-
-    function clearCopyPressState() {
-      if (copyPressState.timer) {
-        clearTimeout(copyPressState.timer);
-      }
-      copyPressState.timer = null;
-      copyPressState.text = '';
-    }
-
-    logEl.addEventListener('pointerdown', (event) => {
-      const bubble = event.target instanceof Element ? event.target.closest('.bubble') : null;
-      if (!bubble) {
-        clearCopyPressState();
-        return;
-      }
-      if (event.pointerType === 'mouse' && event.button !== 0) {
-        return;
-      }
-      copyPressState.fired = false;
-      copyPressState.startX = event.clientX;
-      copyPressState.startY = event.clientY;
-      copyPressState.text = bubble.dataset.copyText || '';
-      clearCopyPressState();
-      copyPressState.text = bubble.dataset.copyText || '';
-      copyPressState.timer = setTimeout(async () => {
-        copyPressState.fired = true;
-        const copied = await copyTextToClipboard(copyPressState.text);
-        showCopyToast(copied ? 'Message copied' : 'Copy failed');
-      }, 550);
-    });
-
-    logEl.addEventListener('pointermove', (event) => {
-      if (!copyPressState.timer) {
-        return;
-      }
-      if (Math.abs(event.clientX - copyPressState.startX) > 12 || Math.abs(event.clientY - copyPressState.startY) > 12) {
-        clearCopyPressState();
-      }
-    });
-
-    logEl.addEventListener('pointerup', clearCopyPressState);
-    logEl.addEventListener('pointerleave', clearCopyPressState);
-    logEl.addEventListener('pointercancel', clearCopyPressState);
-
-    logEl.addEventListener('contextmenu', async (event) => {
-      const bubble = event.target instanceof Element ? event.target.closest('.bubble') : null;
-      if (!bubble) {
-        return;
-      }
-      event.preventDefault();
-      const copied = await copyTextToClipboard(bubble.dataset.copyText || '');
-      showCopyToast(copied ? 'Message copied' : 'Copy failed');
-    });
-
     logEl.addEventListener('click', (event) => {
-      if (!copyPressState.fired) {
+      const copyBtn = event.target instanceof Element ? event.target.closest('.bubble-copy-btn') : null;
+      if (!copyBtn) {
         return;
       }
       event.preventDefault();
       event.stopPropagation();
-      copyPressState.fired = false;
+      const bubble = copyBtn.closest('.bubble');
+      void (async () => {
+        const copied = await copyTextToClipboard(bubble?.dataset.copyText || '');
+        showCopyToast(copied ? 'Message copied' : 'Copy failed');
+      })();
     }, true);
 
     jumpLatestBtnEl.addEventListener('click', () => {
