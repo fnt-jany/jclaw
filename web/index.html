@@ -516,7 +516,12 @@
       flex-wrap: wrap;
       gap: 6px;
       min-width: 0;
+      max-height: 76px;
+      overflow-y: auto;
+      padding-right: 4px;
       align-self: start;
+      overscroll-behavior: contain;
+      scrollbar-gutter: stable;
     }
 
     #message {
@@ -830,6 +835,7 @@
       .attachment-list {
         grid-column: 2 / 4;
         grid-row: 1;
+        max-height: 56px;
       }
 
       #message {
