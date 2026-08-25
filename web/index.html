@@ -415,7 +415,8 @@
 
     #log {
       grid-row: 4;
-      overflow: auto;
+      overflow-y: auto;
+      overflow-x: hidden;
       padding: 14px;
       display: grid;
       gap: 10px;
@@ -429,6 +430,8 @@
       align-items: flex-end;
       gap: 8px;
       width: 100%;
+      max-width: 100%;
+      min-width: 0;
       justify-content: flex-start;
     }
 
@@ -444,6 +447,8 @@
       line-height: 1.45;
       font-size: 14px;
       position: relative;
+      min-width: 0;
+      box-sizing: border-box;
     }
 
     .bubble.with-copy {
@@ -496,6 +501,8 @@
       white-space: pre-wrap;
       overflow-wrap: anywhere;
       word-break: break-word;
+      min-width: 0;
+      max-width: 100%;
     }
 
     .bubble-body.markdown {
@@ -566,6 +573,8 @@
 
     .bubble-body.markdown pre {
       padding: 0.75em;
+      max-width: 100%;
+      box-sizing: border-box;
       overflow-x: auto;
       white-space: pre;
     }
@@ -593,10 +602,12 @@
     .bubble-body.markdown .table-scroll {
       max-width: 100%;
       overflow-x: auto;
+      min-width: 0;
     }
 
     .bubble-body.markdown table {
       width: 100%;
+      max-width: 100%;
       border-collapse: collapse;
       font-size: 0.95em;
       background: #fffdf7;
