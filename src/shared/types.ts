@@ -5,6 +5,18 @@ export type CommandResult = {
   sessionSlot: string;
   sessionName: string;
   sessionNick?: string;
+  sessionModel?: {
+    provider: string;
+    model: string;
+    reasoningEffort: string;
+    modelOverride: string;
+  };
+  slotModels?: Record<string, {
+    provider: string;
+    model: string;
+    reasoningEffort: string;
+    modelOverride: string;
+  }>;
   logEnabled: boolean;
 };
 

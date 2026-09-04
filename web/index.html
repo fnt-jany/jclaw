@@ -1417,6 +1417,7 @@
     const sessionLogs = new Map();
     const sessionHistoryMeta = new Map();
     const sessionNickBySlot = new Map();
+    const sessionModelBySlot = new Map();
     const hydratedSlots = new Set();
     const hydratingSlots = new Map();
     const sessionInputState = new Map();
@@ -2581,6 +2582,36 @@
       resizeMessageInput();
     }
 
+    function compactReasoningEffort(value) {
+      const normalized = String(value || 'none').trim().toLowerCase();
+      if (normalized === 'medium') return 'med';
+      return normalized || 'none';
+    }
+
+    function compactProvider(value) {
+      const normalized = String(value || 'codex').trim().toLowerCase();
+      if (normalized === 'gemini') return 'gem';
+      if (normalized === 'claude') return 'claude';
+      return 'codex';
+    }
+
+    function formatSlotModelMeta(meta) {
+      if (!meta || typeof meta !== 'object') {
+        return '-';
+      }
+      const provider = compactProvider(meta.provider);
+      const model = String(meta.model || '(default)').trim() || '(default)';
+      const reason = compactReasoningEffort(meta.reasoningEffort);
+      return `${provider} ${model} / ${reason}`;
+    }
+
+    function updateMessagePlaceholder(slot = currentSlot) {
+      const text = formatSlotModelMeta(sessionModelBySlot.get(slot));
+      messageEl.placeholder = text && text !== '-'
+        ? `${text}`
+        : 'Type message or /command';
+    }
+
     function formatHistoryRows(rows, slot) {
       const truncateHistoryText = (text) => {
         const value = String(text || '');
@@ -2786,6 +2817,7 @@ ${truncateHistoryText(row.error)}` : '']
 
       stream.addEventListener('session-update', () => {
         void refreshCurrentSessionHistory();
+        void fetchState();
       });
 
       stream.onerror = () => {
@@ -3028,14 +3060,15 @@ ${truncateHistoryText(row.error)}` : '']
       const nextServerTheme = typeof data.serverTheme === 'string' && data.serverTheme.trim() ? data.serverTheme : serverTheme;
       applyServerLabel(nextServerLabel, nextServerTheme);
       const prevSlot = currentSlot;
-      if (options.adoptCurrent) {
-        currentSlot = data.sessionSlot;
+      const responseSlot = typeof data.sessionSlot === 'string' ? data.sessionSlot : '';
+      if (options.adoptCurrent && responseSlot) {
+        currentSlot = responseSlot;
       }
       if (prevSlot !== currentSlot) {
         resetAutoScrollState(true);
       }
       const authText = data.auth ? ` | auth=${data.auth.method}:${data.auth.email}` : '';
-      const statusSlot = currentSlot || data.sessionSlot;
+      const statusSlot = currentSlot || responseSlot;
       if (data.slotNicks && typeof data.slotNicks === 'object') {
         for (const [slot, nickValue] of Object.entries(data.slotNicks)) {
           if (typeof nickValue === 'string') {
@@ -3043,17 +3076,30 @@ ${truncateHistoryText(row.error)}` : '']
           }
         }
       }
-      if (typeof data.sessionNick === 'string') {
-        sessionNickBySlot.set(statusSlot, data.sessionNick);
+      if (data.slotModels && typeof data.slotModels === 'object') {
+        for (const [slot, modelValue] of Object.entries(data.slotModels)) {
+          if (modelValue && typeof modelValue === 'object') {
+            sessionModelBySlot.set(slot, modelValue);
+          }
+        }
       }
-      const nick = (sessionNickBySlot.get(statusSlot) || '').trim() || '-';
-      setStatus(`slot=${statusSlot} | session=${data.sessionName}\nnick=${nick} | log=${data.logEnabled ? 'ON' : 'OFF'}${authText}`);
+      if (responseSlot && typeof data.sessionNick === 'string') {
+        sessionNickBySlot.set(responseSlot, data.sessionNick);
+      }
+      if (responseSlot && data.sessionModel && typeof data.sessionModel === 'object') {
+        sessionModelBySlot.set(responseSlot, data.sessionModel);
+      }
+      if (options.adoptCurrent || responseSlot === currentSlot || !currentSlot) {
+        const nick = (sessionNickBySlot.get(statusSlot) || '').trim() || '-';
+        setStatus(`slot=${statusSlot} | session=${data.sessionName}\nnick=${nick} | log=${data.logEnabled ? 'ON' : 'OFF'}${authText}`);
+      }
+      updateMessagePlaceholder(currentSlot);
       renderSessionTabs(options.adoptCurrent);
       renderCurrentLog();
-      applyInputState(statusSlot);
-      void ensureSessionHydrated(statusSlot);
+      applyInputState(currentSlot);
+      void ensureSessionHydrated(currentSlot);
       ensureSessionEventsSource();
-      void syncPendingJobsForSlot(statusSlot);
+      void syncPendingJobsForSlot(currentSlot);
     }
 
     async function fetchState() {

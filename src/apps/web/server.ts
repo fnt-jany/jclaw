@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { mkdir, readFile, readdir, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
+import { parseArgsStringToArgv } from "string-argv";
 import { loadConfig } from "../../core/config/env";
 import { loadDotenvIntoProcessEnv } from "../../core/config/loadDotenv";
 import { SessionStore, Session } from "../../core/session/sessionStore";
@@ -165,6 +166,13 @@ type CodexUpdateStatus = {
   latestVersion: string | null;
   error: string | null;
   logs: CodexUpdateLogEntry[];
+};
+
+type WebSessionModelMeta = {
+  provider: string;
+  model: string;
+  reasoningEffort: string;
+  modelOverride: string;
 };
 
 let codexVersionSnapshot: CodexVersionSnapshot = {
@@ -1328,6 +1336,61 @@ function getSessionNick(session: Session): string {
   return store.getSessionNickname(session.id);
 }
 
+function getDefaultCodexModel(): string {
+  return (process.env.CODEX_DEFAULT_MODEL ?? "gpt-5.4").trim() || "gpt-5.4";
+}
+
+function extractModelFromArgsTemplate(argsTemplate: string): string {
+  let args: string[] = [];
+  try {
+    args = parseArgsStringToArgv(argsTemplate.replaceAll("{prompt}", "__JCLAW_PROMPT__"));
+  } catch {
+    args = argsTemplate.split(/\s+/).filter(Boolean);
+  }
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--model" || arg === "-m") {
+      return (args[index + 1] ?? "").trim();
+    }
+    if (arg.startsWith("--model=")) {
+      return arg.slice("--model=".length).trim();
+    }
+  }
+
+  return "";
+}
+
+function getProviderDefaultModel(provider: string): string {
+  if (provider === "codex") {
+    return getDefaultCodexModel();
+  }
+  if (provider === "gemini") {
+    return extractModelFromArgsTemplate(geminiRunnerResolved.argsTemplate || config.geminiArgsTemplate) || "(default)";
+  }
+  if (provider === "claude") {
+    return extractModelFromArgsTemplate(claudeRunnerResolved.argsTemplate || config.claudeArgsTemplate) || "(default)";
+  }
+  return "(default)";
+}
+
+function buildSessionModelMeta(session: Session): WebSessionModelMeta {
+  const provider = resolveRunnerForSession(
+    session,
+    config,
+    codexCommandResolved,
+    geminiRunnerResolved,
+    claudeRunnerResolved
+  ).provider;
+  const modelOverride = store.getSessionModelOverride(session.id);
+  return {
+    provider,
+    model: modelOverride || getProviderDefaultModel(provider),
+    reasoningEffort: store.getReasoningEffort(session.id),
+    modelOverride
+  };
+}
+
 function buildSlotNickMap(chatId: string): Record<string, string> {
   const rows = store.listSlotBindings(chatId);
   const out: Record<string, string> = {};
@@ -1335,6 +1398,18 @@ function buildSlotNickMap(chatId: string): Record<string, string> {
     const nick = store.getSessionNickname(row.sessionId).trim();
     if (nick) {
       out[row.slotId] = nick;
+    }
+  }
+  return out;
+}
+
+function buildSlotModelMetaMap(chatId: string): Record<string, WebSessionModelMeta> {
+  const rows = store.listSlotBindings(chatId);
+  const out: Record<string, WebSessionModelMeta> = {};
+  for (const row of rows) {
+    const session = store.getSession(row.sessionId);
+    if (session) {
+      out[row.slotId] = buildSessionModelMeta(session);
     }
   }
   return out;
@@ -1654,10 +1729,14 @@ async function runPrompt(chatId: string, session: Session, prompt: string): Prom
     });
 
     const body = formatResult(result.output, result.error, config.maxOutputChars);
+    const updatedSession = store.getSession(session.id) ?? session;
     return {
-      reply: buildReplyWithHeaders(session, interactionId, { exitCode: result.exitCode, durationMs: result.durationMs }, body),
-      sessionSlot: session.shortId,
-      sessionName: session.id,
+      reply: buildReplyWithHeaders(updatedSession, interactionId, { exitCode: result.exitCode, durationMs: result.durationMs }, body),
+      sessionSlot: updatedSession.shortId,
+      sessionName: updatedSession.id,
+      sessionNick: getSessionNick(updatedSession),
+      sessionModel: buildSessionModelMeta(updatedSession),
+      slotModels: buildSlotModelMetaMap(chatId),
       logEnabled: interactionLogger.isEnabled()
     };
   } finally {
@@ -2279,7 +2358,12 @@ async function handleApiChat(req: IncomingMessage, res: ServerResponse): Promise
       const cmdResult = await handleCommand(chatId, session, normalized);
       if (cmdResult) {
         const resultSession = store.getSession(cmdResult.sessionName) ?? session;
-        json(res, 200, { ...cmdResult, sessionNick: getSessionNick(resultSession) });
+        json(res, 200, {
+          ...cmdResult,
+          sessionNick: getSessionNick(resultSession),
+          sessionModel: buildSessionModelMeta(resultSession),
+          slotModels: buildSlotModelMetaMap(chatId)
+        });
         return;
       }
       json(res, 400, { error: "Unknown command" });
@@ -2297,6 +2381,8 @@ async function handleApiChat(req: IncomingMessage, res: ServerResponse): Promise
         sessionSlot: session.shortId,
         sessionName: session.id,
         sessionNick: getSessionNick(session),
+        sessionModel: buildSessionModelMeta(session),
+        slotModels: buildSlotModelMetaMap(chatId),
         logEnabled: interactionLogger.isEnabled()
       });
       return;
@@ -2315,6 +2401,8 @@ async function handleApiChat(req: IncomingMessage, res: ServerResponse): Promise
       sessionSlot: session.shortId,
       sessionName: session.id,
       sessionNick: getSessionNick(session),
+      sessionModel: buildSessionModelMeta(session),
+      slotModels: buildSlotModelMetaMap(chatId),
       logEnabled: interactionLogger.isEnabled()
     });
     scheduleChatWorkers();
@@ -2347,10 +2435,18 @@ async function handleApiChatJob(req: IncomingMessage, res: ServerResponse): Prom
   }
 
   if (job.status === "completed" && job.result) {
+    const resultSession = store.getSession(job.result.sessionName) ?? store.getSession(job.sessionId);
     json(res, 200, {
       done: true,
       success: true,
-      result: job.result
+      result: resultSession
+        ? {
+            ...job.result,
+            sessionNick: getSessionNick(resultSession),
+            sessionModel: buildSessionModelMeta(resultSession),
+            slotModels: buildSlotModelMetaMap(WEB_CHAT_ID)
+          }
+        : job.result
     });
     return;
   }
@@ -2368,7 +2464,8 @@ async function handleApiChatJob(req: IncomingMessage, res: ServerResponse): Prom
     done: false,
     status: job.status,
     sessionSlot: job.sessionSlot,
-    sessionName: job.sessionId
+    sessionName: job.sessionId,
+    slotModels: buildSlotModelMetaMap(WEB_CHAT_ID)
   });
 }
 
@@ -2540,6 +2637,8 @@ async function handleApiState(req: IncomingMessage, res: ServerResponse): Promis
       sessionName: session.id,
       sessionNick: getSessionNick(session),
       slotNicks: buildSlotNickMap(chatId),
+      sessionModel: buildSessionModelMeta(session),
+      slotModels: buildSlotModelMetaMap(chatId),
       logEnabled,
       auth: {
         email: auth.email,
